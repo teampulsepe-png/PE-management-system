@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+venv/
+.venv/
+env/
+.env
+*.env.*
+!.env.example
+!frontend/.env.production
+
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite / build output
+frontend/dist/
+frontend/.vite/
+dist/
+backend/static/
+
+# TypeScript
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+.kilo/
+*.suo
+*.user
+*.swp
+*.swo
+
+# Misc
+*.log
+*.zip
+/*.png
+/*.jpg
+/*.jpeg
+.cache/
+
+# Editor temp files
+*.tmp.*
+vite.config.ts.timestamp-*.mjs
+frontend/.env.local
+
+# Local data / design notes
+liveops schema/
+linear.app/
+
+# Editor / tool config
+.claude/
