@@ -3,7 +3,7 @@ env:
   - name: DB_AUTH_MODE
     value: oauth
   - name: DB_HOST
-    value: "eep-rapid-surf-ec8u68lu.database.southeastasia.azure.databricks.com"        # paste your Lakebase host here
+    value: "ep-rapid-surf-ec8u68lu.database.southeastasia.azure.databricks.com"        # paste your Lakebase host here
   - name: DB_PORT
     value: "5432"
   - name: DB_NAME
