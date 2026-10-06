@@ -2,15 +2,7 @@ command: ["uvicorn", "backend.main:app"]
 env:
   - name: DB_AUTH_MODE
     value: oauth
-  - name: DB_HOST
-    value: "ep-rapid-surf-ec8u68lu.database.southeastasia.azure.databricks.com"        # paste your Lakebase host here
-  - name: DB_PORT
-    value: "5432"
-  - name: DB_NAME
-    value: "databricks_postgres"        # paste your Lakebase database name here
-
-  - name: DB_USER
-    value: "2ec11047-c0a8-4022-9307-64ac30aaf4c8"        # paste your Lakebase user here
+    
   - name: VAPID_PRIVATE_KEY
     value: "p3JcPr0SNrTjd7l7NM5abdKf9CgC_z0smfNDUlEXdro"
 
