@@ -3,6 +3,8 @@ Run from the project root:
     C:\Python313\python.exe -m backend.seed
 """
 
+import uuid
+
 from backend.db.database import engine, Base
 from backend.db import models  # noqa: F401
 from backend.db.session import SessionLocal
@@ -13,7 +15,7 @@ from backend.db.models import (
     TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask,
     CostEntry, LiveOpsSlaConfig, LiveOpsBusinessUnit,
     LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig,
-    LiveOpsMemberRole,
+    LiveOpsMemberRole, TeamFeatureFlag,
 )
 
 TEAMS = [
@@ -551,13 +553,33 @@ def seed():
         db.commit()
         print(f"Teams: {teams_added} inserted, {len(TEAMS) - teams_added} already existed")
 
+        # --- Team Feature Flags ---
+        _FEATURES = [
+            'tasks', 'kpi', 'workload', 'pipelines',
+            'ai_subscriptions', 'project_lifecycle', 'tracker', 'cost',
+            'liveops', 'devops', 'agent',
+        ]
+        existing_flags = {
+            (f.team_id, f.feature)
+            for f in db.query(TeamFeatureFlag.team_id, TeamFeatureFlag.feature).all()
+        }
+        flags_added = 0
+        for t in TEAMS:
+            for feature in _FEATURES:
+                if (t["id"], feature) not in existing_flags:
+                    db.add(TeamFeatureFlag(
+                        id=str(uuid.uuid4()), team_id=t["id"], feature=feature, enabled=True,
+                    ))
+                    flags_added += 1
+        db.commit()
+        print(f"Team feature flags: {flags_added} inserted, {len(TEAMS) * len(_FEATURES) - flags_added} already existed")
+
         # --- Departments ---
         existing_depts = {d.name for d in db.query(Department.name).all()}
         depts_added = 0
         for name in DEPARTMENTS:
             if name not in existing_depts:
-                import uuid as _uuid
-                db.add(Department(id=str(_uuid.uuid4()), name=name))
+                db.add(Department(id=str(uuid.uuid4()), name=name))
                 depts_added += 1
         db.commit()
         print(f"Departments: {depts_added} inserted, {len(DEPARTMENTS) - depts_added} already existed")
@@ -567,14 +589,12 @@ def seed():
         tools_added = 0
         for t in AI_TOOLS:
             if (t["name"], t["tier"]) not in existing_tools:
-                import uuid as _uuid
-                db.add(AiTool(id=str(_uuid.uuid4()), **t))
+                db.add(AiTool(id=str(uuid.uuid4()), **t))
                 tools_added += 1
         db.commit()
         print(f"AI Tools: {tools_added} inserted, {len(AI_TOOLS) - tools_added} already existed")
 
         # --- Roles ---
-        import uuid as _uuid
         # Rename legacy 'dev' role to 'user' if it still exists
         old_dev = db.query(Role).filter_by(name='dev').first()
         if old_dev:
@@ -586,7 +606,7 @@ def seed():
         roles_added = 0
         for name in ROLES:
             if name not in existing_role_names:
-                db.add(Role(id=str(_uuid.uuid4()), name=name))
+                db.add(Role(id=str(uuid.uuid4()), name=name))
                 roles_added += 1
         db.commit()
         print(f"Roles: {roles_added} inserted, {len(ROLES) - roles_added} already existed")
@@ -642,7 +662,7 @@ def seed():
                 existing = db.query(TeamMember).filter_by(team_id=m["team_id"], name=m["name"]).first()
             if not existing:
                 db.add(TeamMember(
-                    id=str(_uuid.uuid4()),
+                    id=str(uuid.uuid4()),
                     team_id=m["team_id"],
                     name=m["name"],
                     email=m["email"],
@@ -662,19 +682,22 @@ def seed():
 
         # --- KPI Metrics + Evaluations ---
         kpi_added = 0
-        for m in KPI_METRICS:
-            evaluations = m.pop("evaluations")
-            kpi_owner_name = m.pop("kpi_owner_name", None)
-            responsible_party_name = m.pop("responsible_party_name", None)
+        for m_raw in KPI_METRICS:
+            evaluations = m_raw["evaluations"]
+            kpi_owner_name = m_raw.get("kpi_owner_name")
+            responsible_party_name = m_raw.get("responsible_party_name")
             kpi_owner_id = member_map.get(kpi_owner_name) if kpi_owner_name else None
             responsible_party_id = member_map.get(responsible_party_name) if responsible_party_name else None
+
+            m = {k: v for k, v in m_raw.items()
+                 if k not in ("evaluations", "kpi_owner_name", "responsible_party_name")}
 
             exists = db.query(KpiMetric).filter_by(
                 category=m["category"], year=m["year"], metric_name=m["metric_name"],
             ).first()
             if not exists:
                 metric = KpiMetric(
-                    id=str(_uuid.uuid4()),
+                    id=str(uuid.uuid4()),
                     kpi_owner_id=kpi_owner_id,
                     responsible_party_id=responsible_party_id,
                     **m,
@@ -682,10 +705,9 @@ def seed():
                 db.add(metric)
                 db.flush()
                 for ev in evaluations:
-                    db.add(KpiEvaluation(id=str(_uuid.uuid4()), kpi_metric_id=metric.id, **ev))
+                    db.add(KpiEvaluation(id=str(uuid.uuid4()), kpi_metric_id=metric.id, **ev))
                 kpi_added += 1
             else:
-                # Always overwrite FKs to keep seed data authoritative
                 all_matches = db.query(KpiMetric).filter_by(
                     category=m["category"], year=m["year"], metric_name=m["metric_name"],
                 ).all()
@@ -695,37 +717,30 @@ def seed():
                     if responsible_party_id:
                         row.responsible_party_id = responsible_party_id
 
-            m["evaluations"] = evaluations
-            if kpi_owner_name:
-                m["kpi_owner_name"] = kpi_owner_name
-            if responsible_party_name:
-                m["responsible_party_name"] = responsible_party_name
-
         db.commit()
         print(f"KPI metrics: {kpi_added} inserted, {len(KPI_METRICS) - kpi_added} already existed (FK backfilled)")
 
         # --- Tracker Areas / Groups / Tasks / Subtasks ---
-        import uuid as _uuid2
         areas_added = groups_added = tasks_added = subtasks_added = 0
         existing_area_names = {a.name for a in db.query(TrackerArea.name).all()}
 
         for a in TRACKER_AREAS:
             if a["name"] in existing_area_names:
                 continue
-            area = TrackerArea(id=str(_uuid2.uuid4()), name=a["name"], sort_order=a["sort_order"])
+            area = TrackerArea(id=str(uuid.uuid4()), name=a["name"], sort_order=a["sort_order"])
             db.add(area)
             db.flush()
             areas_added += 1
 
             for g in a["groups"]:
-                group = TrackerGroup(id=str(_uuid2.uuid4()), area_id=area.id, name=g["name"], sort_order=g["sort_order"])
+                group = TrackerGroup(id=str(uuid.uuid4()), area_id=area.id, name=g["name"], sort_order=g["sort_order"])
                 db.add(group)
                 db.flush()
                 groups_added += 1
 
                 for t in g["tasks"]:
                     task = TrackerTask(
-                        id=str(_uuid2.uuid4()), group_id=group.id,
+                        id=str(uuid.uuid4()), group_id=group.id,
                         title=t["title"], owner=t["owner"],
                         planned_end_date=t["planned_end_date"], sort_order=t["sort_order"],
                     )
@@ -735,7 +750,7 @@ def seed():
 
                     for s in t["subtasks"]:
                         db.add(TrackerSubtask(
-                            id=str(_uuid2.uuid4()), task_id=task.id,
+                            id=str(uuid.uuid4()), task_id=task.id,
                             title=s["title"], date=s["date"], remarks=s["remarks"],
                             is_done=s["is_done"], sort_order=s["sort_order"],
                         ))
@@ -750,7 +765,7 @@ def seed():
         cost_added = 0
         for e in COST_ENTRIES:
             if e["month"] not in existing_months:
-                db.add(CostEntry(id=str(_uuid.uuid4()), **e))
+                db.add(CostEntry(id=str(uuid.uuid4()), **e))
                 cost_added += 1
         db.commit()
         print(f"Cost entries: {cost_added} inserted ({len(existing_cost)} months already existed)")
@@ -765,7 +780,7 @@ def seed():
         existing_urgencies = {r.urgency for r in db.query(LiveOpsSlaConfig).all()}
         for s in sla_defaults:
             if s["urgency"] not in existing_urgencies:
-                db.add(LiveOpsSlaConfig(id=str(_uuid.uuid4()), **s))
+                db.add(LiveOpsSlaConfig(id=str(uuid.uuid4()), **s))
                 sla_added += 1
         db.commit()
         print(f"LiveOps SLA configs: {sla_added} inserted ({len(existing_urgencies)} already existed)")
@@ -775,7 +790,7 @@ def seed():
         bu_added = 0
         for b in LIVEOPS_BUSINESS_UNITS:
             if b["name"] not in existing_bu_names:
-                db.add(LiveOpsBusinessUnit(id=str(_uuid.uuid4()), name=b["name"], is_active=True))
+                db.add(LiveOpsBusinessUnit(id=str(uuid.uuid4()), name=b["name"], is_active=True))
                 bu_added += 1
         db.commit()
         print(f"LiveOps BUs: {bu_added} inserted, {len(LIVEOPS_BUSINESS_UNITS) - bu_added} already existed")
@@ -788,7 +803,7 @@ def seed():
         tt_added = 0
         for t in LIVEOPS_TICKET_TYPES:
             if t["name"] not in existing_tt_names:
-                db.add(LiveOpsTicketType(id=str(_uuid.uuid4()), is_active=True, **t))
+                db.add(LiveOpsTicketType(id=str(uuid.uuid4()), is_active=True, **t))
                 tt_added += 1
         db.commit()
         print(f"LiveOps ticket types: {tt_added} inserted, {len(LIVEOPS_TICKET_TYPES) - tt_added} already existed")
@@ -806,7 +821,7 @@ def seed():
                 uc_skipped += 1
                 continue
             if (bu_id, uc_name) not in existing_uc:
-                db.add(LiveOpsUseCase(id=str(_uuid.uuid4()), business_unit_id=bu_id, name=uc_name, is_active=True))
+                db.add(LiveOpsUseCase(id=str(uuid.uuid4()), business_unit_id=bu_id, name=uc_name, is_active=True))
                 uc_added += 1
         db.commit()
         print(f"LiveOps use cases: {uc_added} inserted, {len(LIVEOPS_USE_CASES) - uc_added - uc_skipped} already existed, {uc_skipped} skipped")
@@ -828,7 +843,7 @@ def seed():
                 continue
             if (tt_id, bu_id) not in existing_cfg:
                 db.add(LiveOpsApproverConfig(
-                    id=str(_uuid.uuid4()),
+                    id=str(uuid.uuid4()),
                     ticket_type_id=tt_id,
                     business_unit_id=bu_id,
                     workstream_lead_id=None,
@@ -864,7 +879,7 @@ def seed():
                 print(f"  WARNING: member '{entry['name']}' not found — skipping liveops role")
                 continue
             if (mid, entry["role"]) not in existing_lo_roles:
-                db.add(LiveOpsMemberRole(id=str(_uuid.uuid4()), member_id=mid, role=entry["role"]))
+                db.add(LiveOpsMemberRole(id=str(uuid.uuid4()), member_id=mid, role=entry["role"]))
                 lo_added += 1
         db.commit()
         print(f"LiveOps member roles: {lo_added} inserted ({len(existing_lo_roles)} already existed)")

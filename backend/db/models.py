@@ -488,7 +488,7 @@ class LiveOpsMemberRole(Base):
 
     id        = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     member_id = Column(String, ForeignKey("team_members.id", ondelete="CASCADE"), nullable=False)
-    # workstream_lead | team_lead | lo_manager | platform_engineer
+    # workstream_lead | team_lead | lo_manager | platform_engineer | liveops_engineer
     role      = Column(String, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
@@ -497,7 +497,7 @@ class LiveOpsMemberRole(Base):
     __table_args__ = (
         UniqueConstraint("member_id", "role", name="liveops_member_roles_unique"),
         CheckConstraint(
-            "role IN ('workstream_lead','team_lead','lo_manager','platform_engineer')",
+            "role IN ('workstream_lead','team_lead','lo_manager','platform_engineer','liveops_engineer')",
             name="liveops_member_roles_role_check",
         ),
     )
