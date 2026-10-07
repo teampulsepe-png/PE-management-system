@@ -6,7 +6,6 @@ import {
   LayoutList, DollarSign, Infinity, BotMessageSquare, X,
 } from 'lucide-react'
 
-// ── permanent bottom bar tabs ─────────────────────────────────────────────────
 const LEFT_TABS = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/',      end: true  },
   { label: 'Tasks',     icon: CheckSquare,     path: '/tasks', end: false },
@@ -16,35 +15,26 @@ const RIGHT_TABS = [
   { label: 'Settings', icon: Settings, path: '/settings', end: false },
 ]
 
-// ── overflow sheet — all remaining tabs ───────────────────────────────────────
-const SHEET_GROUPS = [
-  {
-    label: 'Work',
-    items: [
-      { label: 'Workload',  icon: GaugeCircle,  path: '/workload'  },
-      { label: 'Pipelines', icon: LineSquiggle, path: '/pipelines' },
-      { label: 'Tracker',   icon: LayoutList,   path: '/tracker'   },
-    ],
-  },
-  {
-    label: 'Platform',
-    items: [
-      { label: 'AI Subs',   icon: Astroid,          path: '/ai-subs'           },
-      { label: 'Lifecycle', icon: Cog,              path: '/project-lifecycle' },
-      { label: 'Cost',      icon: DollarSign,       path: '/cost'              },
-    ],
-  },
-  {
-    label: 'Ops',
-    items: [
-      { label: 'LiveOps', icon: Infinity,        path: '/liveops' },
-      { label: 'DevOps',  icon: Ticket,          path: '/devops'  },
-      { label: 'Agent',   icon: BotMessageSquare, path: '/agent'  },
-    ],
-  },
+// Three rows — each becomes a visually separated row in the floating card
+const SHEET_ROWS = [
+  [
+    { label: 'Workload',  icon: GaugeCircle,      path: '/workload'          },
+    { label: 'Pipelines', icon: LineSquiggle,     path: '/pipelines'         },
+    { label: 'Tracker',   icon: LayoutList,       path: '/tracker'           },
+  ],
+  [
+    { label: 'AI Subs',   icon: Astroid,          path: '/ai-subs'           },
+    { label: 'Lifecycle', icon: Cog,              path: '/project-lifecycle' },
+    { label: 'Cost',      icon: DollarSign,       path: '/cost'              },
+  ],
+  [
+    { label: 'LiveOps',   icon: Infinity,         path: '/liveops'           },
+    { label: 'DevOps',    icon: Ticket,           path: '/devops'            },
+    { label: 'Agent',     icon: BotMessageSquare, path: '/agent'             },
+  ],
 ]
 
-const SHEET_PATHS = SHEET_GROUPS.flatMap(g => g.items.map(i => i.path))
+const SHEET_PATHS = SHEET_ROWS.flat().map(i => i.path)
 
 export default function BottomNav() {
   const [open, setOpen] = useState(false)
@@ -53,59 +43,75 @@ export default function BottomNav() {
 
   return (
     <>
-      {/* backdrop */}
-      {open && (
-        <div
-          className="fixed inset-0 z-30 md:hidden bg-canvas/70 backdrop-blur-sm"
-          onClick={() => setOpen(false)}
-        />
-      )}
-
-      {/* bottom sheet */}
+      {/* backdrop — subtle, only visible when open */}
       <div
-        className="fixed inset-x-0 z-40 md:hidden rounded-t-2xl bg-surface-1 border-t border-hairline shadow-2xl transition-transform duration-300 ease-out"
+        className="fixed inset-0 z-30 md:hidden transition-opacity duration-200"
         style={{
-          bottom: 'calc(4rem + env(safe-area-inset-bottom))',
-          transform: open ? 'translateY(0)' : 'translateY(110%)',
+          background: 'rgba(0,0,0,0.45)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          backdropFilter: open ? 'blur(2px)' : 'none',
+        }}
+        onClick={() => setOpen(false)}
+      />
+
+      {/* floating compact card */}
+      <div
+        className="fixed z-40 md:hidden rounded-2xl border border-hairline shadow-2xl overflow-hidden"
+        style={{
+          left: 16,
+          right: 16,
+          bottom: `calc(4.5rem + env(safe-area-inset-bottom))`,
+          background: 'color-mix(in srgb, var(--color-surface-1) 94%, transparent)',
+          backdropFilter: 'blur(24px)',
+          WebkitBackdropFilter: 'blur(24px)',
+          transform: open ? 'translateY(0) scale(1)' : 'translateY(12px) scale(0.95)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          transition: 'transform 220ms cubic-bezier(0.34,1.3,0.64,1), opacity 180ms ease',
+          transformOrigin: 'bottom center',
         }}
       >
-        {/* drag handle */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-9 h-1 rounded-full bg-hairline-strong" />
-        </div>
-
-        <div className="px-4 pt-2 pb-5 flex flex-col gap-5">
-          {SHEET_GROUPS.map(group => (
-            <div key={group.label}>
-              <p className="text-[9px] font-bold text-ink-tertiary uppercase tracking-widest mb-2 px-1">
-                {group.label}
-              </p>
-              <div className="grid grid-cols-3 gap-2">
-                {group.items.map(item => (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
-                    onClick={() => setOpen(false)}
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1.5 py-3 rounded-xl transition-colors ${
-                        isActive
-                          ? 'bg-primary/10 text-primary-hover'
-                          : 'bg-surface-2 text-ink-subtle active:bg-surface-3'
-                      }`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <item.icon size={19} strokeWidth={isActive ? 2.2 : 1.6} />
-                        <span className="text-[10px] font-medium">{item.label}</span>
-                      </>
-                    )}
-                  </NavLink>
-                ))}
-              </div>
+        {SHEET_ROWS.map((row, ri) => (
+          <div key={ri}>
+            {ri > 0 && <div className="border-t border-hairline mx-3" />}
+            <div className="grid grid-cols-3">
+              {row.map(item => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => setOpen(false)}
+                  className="flex flex-col items-center gap-2 py-4 px-2 active:opacity-70 transition-opacity"
+                >
+                  {({ isActive }) => (
+                    <>
+                      <div
+                        className="w-11 h-11 rounded-2xl flex items-center justify-center transition-colors"
+                        style={{
+                          background: isActive
+                            ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)'
+                            : 'var(--color-surface-2)',
+                        }}
+                      >
+                        <item.icon
+                          size={19}
+                          strokeWidth={isActive ? 2.2 : 1.6}
+                          className={isActive ? 'text-primary-hover' : 'text-ink-subtle'}
+                        />
+                      </div>
+                      <span
+                        className="text-[10px] font-medium leading-none"
+                        style={{ color: isActive ? 'var(--color-primary-hover)' : 'var(--color-ink-tertiary)' }}
+                      >
+                        {item.label}
+                      </span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
       </div>
 
       {/* tab bar */}
@@ -128,7 +134,7 @@ export default function BottomNav() {
             >
               {({ isActive }) => (
                 <>
-                  <item.icon size={22} strokeWidth={isActive ? 2.2 : 1.6} />
+                  <item.icon size={21} strokeWidth={isActive ? 2.2 : 1.6} />
                   <span className="text-[10px] font-medium">{item.label}</span>
                 </>
               )}
@@ -139,16 +145,21 @@ export default function BottomNav() {
           <div className="flex-1 relative flex items-center justify-center">
             <button
               onClick={() => setOpen(v => !v)}
-              aria-label={open ? 'Close menu' : 'More navigation'}
-              className={`absolute left-1/2 -translate-x-1/2 w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 ${
-                open || moreActive ? 'bg-primary' : 'bg-surface-3'
+              aria-label={open ? 'Close' : 'More'}
+              className={`absolute left-1/2 -translate-x-1/2 w-13 h-13 rounded-full shadow-xl flex items-center justify-center transition-all duration-250 ${
+                open || moreActive ? 'bg-primary scale-110' : 'bg-surface-3 scale-100'
               }`}
-              style={{ bottom: 'calc(50% - 28px + 12px)' }}
+              style={{ bottom: 'calc(50% - 26px + 12px)', width: 52, height: 52 }}
             >
-              {open
-                ? <X size={22} className="text-white" />
-                : <LayoutGrid size={22} className={`transition-colors ${moreActive ? 'text-white' : 'text-ink'}`} />
-              }
+              <div
+                className="transition-all duration-200"
+                style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              >
+                {open
+                  ? <X size={20} className="text-white" />
+                  : <LayoutGrid size={20} className={moreActive ? 'text-white' : 'text-ink'} />
+                }
+              </div>
             </button>
           </div>
 
@@ -165,7 +176,7 @@ export default function BottomNav() {
             >
               {({ isActive }) => (
                 <>
-                  <item.icon size={22} strokeWidth={isActive ? 2.2 : 1.6} />
+                  <item.icon size={21} strokeWidth={isActive ? 2.2 : 1.6} />
                   <span className="text-[10px] font-medium">{item.label}</span>
                 </>
               )}

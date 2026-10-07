@@ -286,39 +286,39 @@ export default function Dashboard() {
       {/* This-week stat tiles */}
       <div>
         <p className="text-[10px] font-semibold text-ink-tertiary uppercase mb-2.5" style={{ letterSpacing: '0.4px' }}>This Week</p>
-        <div className="grid grid-cols-3 gap-3 md:gap-4">
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 md:gap-4">
 
-          <div className="bg-surface-1 rounded-xl border border-hairline px-4 py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-7 h-7 rounded-lg bg-success/10 flex items-center justify-center flex-shrink-0">
-                <CheckCircle2 size={14} className="text-success" />
+          <div className="bg-surface-1 rounded-xl border border-hairline px-3 sm:px-4 py-3 sm:py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
+            <div className="flex items-center gap-1.5 sm:gap-2 mb-2 sm:mb-3">
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-success/10 flex items-center justify-center flex-shrink-0">
+                <CheckCircle2 size={12} className="text-success" />
               </div>
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>Done</p>
+              <p className="text-[9px] sm:text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>Done</p>
             </div>
-            <p className="text-xl md:text-2xl font-bold text-ink leading-none mb-1">{doneCount}</p>
-            <p className="text-[10px] text-ink-tertiary truncate">of {wTasks.length} tasks</p>
+            <p className="text-lg sm:text-xl md:text-2xl font-bold text-ink leading-none mb-0.5 sm:mb-1">{doneCount}</p>
+            <p className="text-[9px] sm:text-[10px] text-ink-tertiary truncate">of {wTasks.length}</p>
           </div>
 
-          <div className="bg-surface-1 rounded-xl border border-hairline px-4 py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                <Clock size={14} className="text-primary-hover" />
+          <div className="bg-surface-1 rounded-xl border border-hairline px-3 sm:px-4 py-3 sm:py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
+            <div className="flex items-center gap-1.5 sm:gap-2 mb-2 sm:mb-3">
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <Clock size={12} className="text-primary-hover" />
               </div>
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>In Progress</p>
+              <p className="text-[9px] sm:text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>Active</p>
             </div>
-            <p className="text-xl md:text-2xl font-bold text-ink leading-none mb-1">{inProgressCount}</p>
-            <p className="text-[10px] text-ink-tertiary truncate">tasks started</p>
+            <p className="text-lg sm:text-xl md:text-2xl font-bold text-ink leading-none mb-0.5 sm:mb-1">{inProgressCount}</p>
+            <p className="text-[9px] sm:text-[10px] text-ink-tertiary truncate">in progress</p>
           </div>
 
-          <div className="bg-surface-1 rounded-xl border border-hairline px-4 py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-7 h-7 rounded-lg bg-hairline-strong flex items-center justify-center flex-shrink-0">
-                <Circle size={14} className="text-ink-tertiary" />
+          <div className="bg-surface-1 rounded-xl border border-hairline px-3 sm:px-4 py-3 sm:py-4 hover:border-hairline-strong hover:bg-surface-2 transition-all">
+            <div className="flex items-center gap-1.5 sm:gap-2 mb-2 sm:mb-3">
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-hairline-strong flex items-center justify-center flex-shrink-0">
+                <Circle size={12} className="text-ink-tertiary" />
               </div>
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>Pending</p>
+              <p className="text-[9px] sm:text-[10px] font-semibold text-ink-tertiary uppercase truncate" style={{ letterSpacing: '0.4px' }}>Pending</p>
             </div>
-            <p className="text-xl md:text-2xl font-bold text-ink leading-none mb-1">{pendingCount}</p>
-            <p className="text-[10px] text-ink-tertiary truncate">not started</p>
+            <p className="text-lg sm:text-xl md:text-2xl font-bold text-ink leading-none mb-0.5 sm:mb-1">{pendingCount}</p>
+            <p className="text-[9px] sm:text-[10px] text-ink-tertiary truncate">not started</p>
           </div>
 
         </div>
@@ -476,7 +476,7 @@ export default function Dashboard() {
       {/* Quick access */}
       <div>
         <p className="text-[10px] font-semibold text-ink-tertiary uppercase mb-2.5" style={{ letterSpacing: '0.4px' }}>Quick Access</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
           {RECURRENCES.map(r => {
             const rTasks = tasksByRec[r]
             const rOccs  = occsByRec[r]

@@ -42,7 +42,7 @@ export default function TopBar() {
   }
 
   return (
-    <header className="relative flex items-center justify-between px-6 h-14 bg-surface-1 border-b border-hairline z-10 flex-shrink-0">
+    <header className="relative flex items-center justify-between px-4 sm:px-6 h-12 sm:h-14 bg-surface-1 border-b border-hairline z-10 flex-shrink-0">
       <div>
         <h1
           className="text-sm font-semibold text-ink leading-tight"

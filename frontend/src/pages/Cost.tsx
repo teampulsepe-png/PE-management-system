@@ -413,8 +413,8 @@ export default function Cost() {
   // ── loading skeleton ─────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="grid grid-cols-[280px_1fr] gap-5 animate-pulse">
-        <div className="rounded-2xl h-[430px]" style={{ background: '#13151e' }} />
+      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 animate-pulse">
+        <div className="rounded-2xl h-64 lg:h-[430px]" style={{ background: '#13151e' }} />
         <div className="flex flex-col gap-4">
           <div className="rounded-2xl h-36" style={{ background: '#13151e' }} />
           <div className="rounded-2xl h-64" style={{ background: '#13151e' }} />
@@ -501,8 +501,8 @@ export default function Cost() {
         ═══════════════════════════════════════════════════════════════════ */}
         <div className="flex flex-col gap-5">
 
-          {/* Outstanding Bill + Last Updated — side by side */}
-          <div className="grid grid-cols-2 gap-5">
+          {/* Outstanding Bill + Last Updated — stack on mobile, side-by-side on sm+ */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
             <SpendCard cur={current} prv={previous} />
             <LastUpdatedCard
               lastFetched={lastFetched}
@@ -519,22 +519,19 @@ export default function Cost() {
           ───────────────────────────────────────────────────────────────── */}
           <div className="rounded-2xl overflow-hidden" style={{ background: '#13151e' }}>
 
-            {/* toolbar */}
-            <div className="flex items-center justify-between px-6 py-4"
+            {/* toolbar — wraps on mobile */}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-6 py-4"
               style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
 
-              {/* title + filter chip (mirrors "Bill Approvals  All ●" from reference) */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-sm font-bold text-white">Bill Approvals</span>
-
-                {/* "All" chip with coloured dot — exact match to reference filter */}
                 <div className="flex items-center gap-1 rounded-lg px-1 py-0.5"
                   style={{ background: 'rgba(255,255,255,0.06)' }}>
                   {(['all', ...CATS] as (Cat | 'all')[]).map(f => (
                     <button
                       key={f}
                       onClick={() => setFilter(f)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all"
+                      className="px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all"
                       style={{
                         background: filter === f ? 'rgba(255,255,255,0.12)' : 'transparent',
                         color: filter === f ? '#fff' : 'rgba(255,255,255,0.4)',
@@ -545,38 +542,43 @@ export default function Cost() {
                 </div>
               </div>
 
-              {/* two buttons — outlined + filled (matches "Upload Invoice" / "Invoice Calendar") */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 self-end sm:self-auto">
                 <button
                   onClick={() => load(true)}
                   disabled={refreshing}
                   className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
-                  style={{
-                    border: '1px solid rgba(255,255,255,0.15)',
-                    color: 'rgba(255,255,255,0.6)',
-                    background: 'transparent',
-                  }}>
+                  style={{ border: '1px solid rgba(255,255,255,0.15)', color: 'rgba(255,255,255,0.6)', background: 'transparent' }}>
                   <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-                  Upload Invoice
+                  <span className="hidden sm:inline">Upload Invoice</span>
+                  <span className="sm:hidden">Refresh</span>
                 </button>
                 <button
                   onClick={() => setDrawer(true)}
                   className="flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg text-white"
                   style={{ background: '#16a34a' }}>
                   <Plus size={11} />
-                  Invoice Calendar
+                  <span className="hidden sm:inline">Invoice Calendar</span>
+                  <span className="sm:hidden">Add</span>
                 </button>
               </div>
             </div>
 
-            {/* table column headers — matches "Approver | Assigned For | 0-5 Days | 6-10 Days | 10+ Days | Total" */}
-            <div className="grid items-center px-6 py-2.5"
+            {/* desktop column headers (hidden on mobile) */}
+            <div className="hidden sm:grid items-center px-6 py-2.5"
               style={{
                 gridTemplateColumns: '1fr 120px 80px 80px 80px 80px',
                 borderBottom: '1px solid rgba(255,255,255,0.06)',
               }}>
               {['Approver', 'Assigned For', '0-5 Days', '6-10 Days', '10+ Days', 'Total'].map(h => (
                 <p key={h} className="text-[10px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'rgba(255,255,255,0.28)' }}>{h}</p>
+              ))}
+            </div>
+            {/* mobile column headers */}
+            <div className="sm:hidden grid grid-cols-[1fr_auto_32px] items-center px-4 py-2.5"
+              style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              {['Service', 'Amount', ''].map(h => (
+                <p key={h} className={`text-[10px] font-semibold uppercase tracking-wider ${h === 'Amount' ? 'text-right' : ''}`}
                   style={{ color: 'rgba(255,255,255,0.28)' }}>{h}</p>
               ))}
             </div>
@@ -596,64 +598,31 @@ export default function Cost() {
                 const share = current[entry.category]
                   ? Math.round((entry.amountCents / current[entry.category]) * 100)
                   : 0
+                const borderStyle = i > 0 ? '1px solid rgba(255,255,255,0.05)' : 'none'
 
                 return (
-                  <div
-                    key={entry.id}
-                    className="group grid items-center px-6 py-3.5 hover:bg-white/[0.03] transition-colors"
-                    style={{
-                      gridTemplateColumns: '1fr 120px 80px 80px 80px 80px',
-                      borderTop: i > 0 ? '1px solid rgba(255,255,255,0.05)' : 'none',
-                    }}>
-
-                    {/* Approver — avatar circle + name (matches reference exactly) */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-                        style={{ background: `${color}22` }}>
-                        <Icon size={13} style={{ color }} />
+                  <div key={entry.id}>
+                    {/* ── mobile row ── */}
+                    <div
+                      className="group sm:hidden grid grid-cols-[1fr_auto_32px] items-center px-4 py-3 hover:bg-white/[0.03] transition-colors"
+                      style={{ borderTop: borderStyle }}>
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                          style={{ background: `${color}22` }}>
+                          <Icon size={13} style={{ color }} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-white truncate leading-tight">{entry.serviceName}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
+                            <p className="text-[10px] truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                              {CAT_LABEL[entry.category]}
+                            </p>
+                          </div>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-white truncate leading-tight">
-                          {entry.serviceName}
-                        </p>
-                        <p className="text-[10px] truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
-                          {entry.serviceDescription ?? CAT_LABEL[entry.category]}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Assigned For — category label with coloured dot (mirrors reference second avatar col) */}
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
-                      <span className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>
-                        {CAT_LABEL[entry.category]}
-                      </span>
-                    </div>
-
-                    {/* 0-5 Days column — share % */}
-                    <div>
-                      <p className="text-xs font-semibold text-white">{share} Bills</p>
-                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                        ${(entry.amountCents / 100 * 0.3).toFixed(0)}
-                      </p>
-                    </div>
-
-                    {/* 6-10 Days */}
-                    <div>
-                      <p className="text-xs font-semibold text-white">0 Bills</p>
-                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
-                    </div>
-
-                    {/* 10+ Days */}
-                    <div>
-                      <p className="text-xs font-semibold text-white">0 Bills</p>
-                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
-                    </div>
-
-                    {/* Total */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs font-bold text-white tabular-nums">{fmt(entry.amountCents)}</p>
+                      <div className="text-right pr-3">
+                        <p className="text-sm font-bold text-white tabular-nums">{fmt(entry.amountCents)}</p>
                         <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>{share}%</p>
                       </div>
                       <button
@@ -663,10 +632,61 @@ export default function Cost() {
                         style={{ color: 'rgba(255,255,255,0.35)' }}
                         onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
                         onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>
-                        {deleting === entry.id
-                          ? <Loader2 size={12} className="animate-spin" />
-                          : <Trash2 size={12} />}
+                        {deleting === entry.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                       </button>
+                    </div>
+
+                    {/* ── desktop row ── */}
+                    <div
+                      className="group hidden sm:grid items-center px-6 py-3.5 hover:bg-white/[0.03] transition-colors"
+                      style={{ gridTemplateColumns: '1fr 120px 80px 80px 80px 80px', borderTop: borderStyle }}>
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                          style={{ background: `${color}22` }}>
+                          <Icon size={13} style={{ color }} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-white truncate leading-tight">{entry.serviceName}</p>
+                          <p className="text-[10px] truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                            {entry.serviceDescription ?? CAT_LABEL[entry.category]}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+                        <span className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                          {CAT_LABEL[entry.category]}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-white">{share} Bills</p>
+                        <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                          ${(entry.amountCents / 100 * 0.3).toFixed(0)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-white">0 Bills</p>
+                        <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-white">0 Bills</p>
+                        <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs font-bold text-white tabular-nums">{fmt(entry.amountCents)}</p>
+                          <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>{share}%</p>
+                        </div>
+                        <button
+                          onClick={() => onDelete(entry.id)}
+                          disabled={deleting === entry.id}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded transition-all"
+                          style={{ color: 'rgba(255,255,255,0.35)' }}
+                          onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                          onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>
+                          {deleting === entry.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )
