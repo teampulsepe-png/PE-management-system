@@ -1,13 +1,12 @@
-import { LayoutDashboard, DollarSign, CheckSquare, Ticket, Scale, LineSquiggle, Astroid, Cog, Infinity, BotMessageSquare, LayoutList, GaugeCircle, Settings } from 'lucide-react'
+import { LayoutDashboard, DollarSign, CheckSquare, Ticket, LineSquiggle, Astroid, Cog, Infinity, BotMessageSquare, LayoutList, GaugeCircle, Settings } from 'lucide-react'
 import SidebarNavItem from './SidebarNavItem'
 import { useAppContext } from '../../context/AppContext'
 
 const MAIN_NAV = [
-  { label: 'Dashboard',  icon: LayoutDashboard, path: '/',         featureKey: null },
-  { label: 'Tasks',      icon: CheckSquare,     path: '/tasks',    featureKey: 'tasks' },
-  { label: 'Workload',   icon: GaugeCircle,     path: '/workload', featureKey: 'workload' },
-  { label: 'KPI',        icon: Scale,           path: '/kpi',      featureKey: 'kpi' },
-  { label: 'Pipelines',  icon: LineSquiggle,    path: '/pipelines',featureKey: 'pipelines' },
+  { label: 'Dashboard',  icon: LayoutDashboard, path: '/',          featureKey: null },
+  { label: 'Tasks',      icon: CheckSquare,     path: '/tasks',     featureKey: 'tasks' },
+  { label: 'Workload',   icon: GaugeCircle,     path: '/workload',  featureKey: 'workload' },
+  { label: 'Pipelines',  icon: LineSquiggle,    path: '/pipelines', featureKey: 'pipelines' },
 ]
 
 const TOOLS_NAV = [

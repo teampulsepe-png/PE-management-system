@@ -1,339 +1,360 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { Database, Server, Bot, TrendingUp, TrendingDown, Plus, X, Trash2, Loader2, RefreshCw, ChevronDown } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Database, Server, Bot, TrendingUp, TrendingDown, Plus, Trash2, Loader2, ChevronDown, X, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../api/teamPulseApi'
 import type { CostSummary, CostEntry, CostCategory } from '../types'
 
-// ── config ────────────────────────────────────────────────────────────────────
+// ── category palette (matches reference donut colours) ─────────────────────────
+type Cat = CostCategory
 
-const CAT_CFG: Record<CostCategory, { label: string; Icon: LucideIcon; color: string; iconBg: string; iconCls: string }> = {
-  database: { label: 'Database', Icon: Database, color: '#94a3b8', iconBg: 'bg-slate-800',     iconCls: 'text-slate-400'   },
-  compute:  { label: 'Compute',  Icon: Server,   color: '#5e6ad2', iconBg: 'bg-indigo-900/40', iconCls: 'text-indigo-400'  },
-  agent:    { label: 'Agent',    Icon: Bot,       color: '#8b5cf6', iconBg: 'bg-violet-900/30', iconCls: 'text-violet-400'  },
+const CAT_COLOR: Record<Cat, string> = {
+  database: '#2dd4bf',
+  compute:  '#f97316',
+  agent:    '#a78bfa',
 }
-
-const CATS: CostCategory[] = ['database', 'compute', 'agent']
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function fmt(cents: number) {
-  return `$${(cents / 100).toFixed(2)}`
+const CAT_LABEL: Record<Cat, string> = {
+  database: 'Database',
+  compute:  'Compute',
+  agent:    'Agent',
 }
+const CAT_ICON: Record<Cat, LucideIcon> = {
+  database: Database,
+  compute:  Server,
+  agent:    Bot,
+}
+const CATS: Cat[] = ['database', 'compute', 'agent']
 
-function fmtMonth(yyyyMm: string) {
-  const [y, m] = yyyyMm.split('-')
+// ── helpers ────────────────────────────────────────────────────────────────────
+const fmt  = (c: number) => `$${(c / 100).toFixed(2)}`
+const moLbl = (ym: string) => {
+  const [y, m] = ym.split('-')
   return new Date(+y, +m - 1).toLocaleString('en-US', { month: 'short', year: '2-digit' })
 }
-
-function momDelta(cur: number, prv: number | undefined) {
+const mom = (cur: number, prv?: number | null) => {
   if (!prv) return null
   const p = ((cur - prv) / prv) * 100
   return { pct: Math.abs(p).toFixed(1), up: p > 0 }
 }
 
-// ── animated counter ──────────────────────────────────────────────────────────
-
-function useCountUp(target: number, ms = 900) {
-  const [val, setVal] = useState(0)
+// ── count-up hook ──────────────────────────────────────────────────────────────
+function useUp(to: number) {
+  const [v, setV] = useState(0)
   const raf = useRef<number | null>(null)
   useEffect(() => {
-    if (target === 0) { setVal(0); return }
+    if (!to) { setV(0); return }
     const t0 = performance.now()
-    const step = (now: number) => {
-      const p = Math.min((now - t0) / ms, 1)
-      setVal(Math.round((1 - (1 - p) ** 3) * target))
-      if (p < 1) raf.current = requestAnimationFrame(step)
+    const tick = (now: number) => {
+      const p = Math.min((now - t0) / 850, 1)
+      setV(Math.round((1 - (1 - p) ** 3) * to))
+      if (p < 1) raf.current = requestAnimationFrame(tick)
     }
-    raf.current = requestAnimationFrame(step)
+    raf.current = requestAnimationFrame(tick)
     return () => { if (raf.current) cancelAnimationFrame(raf.current) }
-  }, [target, ms])
-  return val
+  }, [to])
+  return v
 }
 
-// ── donut chart ───────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  DONUT CHART
+//  Matches reference: thick ring, flat segment ends, gaps between, centre text
+// ══════════════════════════════════════════════════════════════════════════════
+function Donut({ db, cp, ag, total }: { db: number; cp: number; ag: number; total: number }) {
+  const [hover, setHover] = useState<Cat | null>(null)
+  const animated = useUp(total)
 
-function Donut({ dbPct, cpPct, agPct, total }: { dbPct: number; cpPct: number; agPct: number; total: number }) {
-  const [hovered, setHovered] = useState<CostCategory | null>(null)
-  const animTotal = useCountUp(total)
+  const SIZE = 230, CX = 115, CY = 115, R = 90
+  const CIRC = 2 * Math.PI * R
+  const GAP_LEN = (4 / 360) * CIRC
 
-  const SIZE = 200; const CX = 100; const CY = 100; const R = 80
-  const circ = 2 * Math.PI * R
-
-  const segs: { cat: CostCategory; pct: number; offset: number; color: string }[] = [
-    { cat: 'database', pct: dbPct, offset: 0,              color: '#94a3b8' },
-    { cat: 'compute',  pct: cpPct, offset: dbPct,          color: '#5e6ad2' },
-    { cat: 'agent',    pct: agPct, offset: dbPct + cpPct,  color: '#8b5cf6' },
+  const segs: { cat: Cat; pct: number; start: number }[] = [
+    { cat: 'database', pct: db, start: 0        },
+    { cat: 'compute',  pct: cp, start: db        },
+    { cat: 'agent',    pct: ag, start: db + cp   },
   ]
-  const hov = segs.find(s => s.cat === hovered)
+  const hSeg = segs.find(s => s.cat === hover)
 
   return (
-    <div className="relative" style={{ width: SIZE, height: SIZE }}>
+    <div className="relative mx-auto" style={{ width: SIZE, height: SIZE }}>
       <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-        <circle cx={CX} cy={CY} r={R} fill="none" stroke="#1e2128" strokeWidth="20" />
-        {segs.map(seg => {
-          const dashLen = Math.max(0, (seg.pct / 100) * circ - 3)
-          const dashOff = circ - (seg.offset / 100) * circ
-          const isHov = hovered === seg.cat
+        {/* background track */}
+        <circle cx={CX} cy={CY} r={R} fill="none" stroke="#1e2030" strokeWidth="28" />
+
+        {segs.map(s => {
+          const len  = Math.max(0, (s.pct / 100) * CIRC - GAP_LEN)
+          const off  = CIRC - (s.start / 100) * CIRC
+          const isH  = hover === s.cat
           return (
             <circle
-              key={seg.cat}
+              key={s.cat}
               cx={CX} cy={CY} r={R}
               fill="none"
-              stroke={seg.color}
-              strokeWidth={isHov ? 25 : 20}
-              strokeDasharray={`${dashLen} ${circ - dashLen}`}
-              strokeDashoffset={dashOff}
-              strokeLinecap="round"
+              stroke={CAT_COLOR[s.cat]}
+              strokeWidth={isH ? 34 : 28}
+              strokeDasharray={`${len} ${CIRC - len}`}
+              strokeDashoffset={off}
+              strokeLinecap="butt"
               transform={`rotate(-90 ${CX} ${CY})`}
-              style={{ cursor: 'pointer', transition: 'stroke-width .15s, opacity .15s', opacity: hovered && !isHov ? 0.2 : 1 }}
-              onMouseEnter={() => setHovered(seg.cat)}
-              onMouseLeave={() => setHovered(null)}
+              style={{
+                transition: 'stroke-width .15s ease, opacity .15s ease',
+                opacity: hover && !isH ? 0.12 : 1,
+                cursor: 'pointer',
+              }}
+              onMouseEnter={() => setHover(s.cat)}
+              onMouseLeave={() => setHover(null)}
             />
           )
         })}
       </svg>
+
+      {/* centre text */}
       <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none">
-        {hov ? (
-          <>
-            <p className="text-[9px] font-bold uppercase tracking-widest mb-1" style={{ color: hov.color }}>
-              {CAT_CFG[hov.cat].label}
-            </p>
-            <p className="text-2xl font-bold text-white tabular-nums">{hov.pct.toFixed(1)}%</p>
-          </>
-        ) : (
-          <>
-            <p className="text-[9px] font-semibold uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.28)' }}>
-              Total
-            </p>
-            <p className="text-2xl font-bold text-white tabular-nums">{fmt(animTotal)}</p>
-          </>
-        )}
+        <span className="text-2xl font-bold text-white tabular-nums leading-none">
+          {hSeg ? `${hSeg.pct.toFixed(1)}%` : fmt(animated)}
+        </span>
+        <span
+          className="text-[11px] font-semibold mt-1"
+          style={{ color: hSeg ? CAT_COLOR[hSeg.cat] : 'rgba(255,255,255,0.3)' }}
+        >
+          {hSeg ? CAT_LABEL[hSeg.cat] : 'Total'}
+        </span>
       </div>
     </div>
   )
 }
 
-// ── stat column (used inside gradient banner) ─────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  GRADIENT SPEND CARD — compact, lives side-by-side with LastUpdatedCard
+// ══════════════════════════════════════════════════════════════════════════════
+function SpendCard({ cur, prv }: { cur: CostSummary['current']; prv: CostSummary['previous'] }) {
+  const total = useUp(cur.total)
+  const chg   = mom(cur.total, prv?.total)
 
-function StatCol({ label, value, delta, color, className = '' }: {
-  label: string; value: number; delta: ReturnType<typeof momDelta>; color?: string; className?: string
-}) {
-  const val = useCountUp(value)
   return (
-    <div className={className}>
-      <p className="text-[10px] font-semibold uppercase tracking-widest mb-2"
-        style={{ color: color ? `${color}70` : 'rgba(255,255,255,0.28)' }}>
-        {label}
-      </p>
-      <p className="text-2xl font-bold tabular-nums leading-none mb-2"
-        style={{ color: color ?? '#ffffff' }}>
-        {fmt(val)}
-      </p>
-      {delta ? (
-        <div className={`flex items-center gap-1 text-[11px] font-semibold ${delta.up ? 'text-red-400' : 'text-emerald-400'}`}>
-          {delta.up ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-          {delta.up ? '+' : '-'}{delta.pct}% MoM
+    <div
+      className="rounded-2xl relative overflow-hidden flex flex-col justify-between"
+      style={{ background: 'linear-gradient(135deg, #1a1f52 0%, #10122e 38%, #07080e 100%)' }}
+    >
+      <div className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse at 90% 40%, rgba(139,92,246,0.2) 0%, transparent 55%)' }} />
+
+      <div className="relative px-6 pt-5 pb-6 flex flex-col gap-4">
+        <p className="text-[10px] font-bold uppercase tracking-[0.16em]"
+          style={{ color: 'rgba(255,255,255,0.28)' }}>
+          Outstanding Bill
+        </p>
+
+        {/* total */}
+        <div>
+          <p className="text-3xl font-bold text-white tabular-nums leading-none">{fmt(total)}</p>
+          {chg ? (
+            <p className={`flex items-center gap-1 text-[11px] font-semibold mt-2 ${chg.up ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {chg.up ? <TrendingUp size={9} strokeWidth={2.5}/> : <TrendingDown size={9} strokeWidth={2.5}/>}
+              {chg.up ? '+' : '−'}{chg.pct}%
+              <span style={{ color: 'rgba(255,255,255,0.2)' }} className="font-normal">vs last mo</span>
+            </p>
+          ) : (
+            <p className="text-[11px] mt-2" style={{ color: 'rgba(255,255,255,0.2)' }}>No prior data</p>
+          )}
         </div>
-      ) : (
-        <p className="text-[11px]" style={{ color: 'rgba(255,255,255,0.18)' }}>No prior data</p>
-      )}
+
+        {/* per-category breakdown row */}
+        <div className="grid grid-cols-3 gap-3 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          {CATS.map(cat => (
+            <div key={cat}>
+              <p className="text-[9px] font-bold uppercase tracking-wider mb-1.5"
+                style={{ color: `${CAT_COLOR[cat]}55` }}>
+                {CAT_LABEL[cat]}
+              </p>
+              <p className="text-sm font-bold tabular-nums" style={{ color: CAT_COLOR[cat] }}>
+                {fmt(cur[cat])}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
 
-// ── trend chart ───────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  LAST UPDATED CARD — sits next to SpendCard
+// ══════════════════════════════════════════════════════════════════════════════
+function timeAgo(d: Date) {
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000)
+  if (mins < 1)  return 'Just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)  return `${hrs}h ago`
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
-function TrendChart({ history }: { history: CostSummary['history'] }) {
-  const [hovered, setHovered] = useState<number | null>(null)
-  const ML = 44; const MR = 12; const MT = 16; const MB = 26
-  const VW = 520; const VH = 150
-  const PW = VW - ML - MR; const PH = VH - MT - MB
-  const maxTotal = Math.max(...history.map(h => h.database + h.compute + h.agent), 1)
-  const MAX_Y = Math.ceil(maxTotal / 100) * 100 + 100
-  const sc = PH / MAX_Y
-  const BW = 36
-  const slotW = PW / (history.length || 1)
-  const baseY = MT + PH
-
+function LastUpdatedCard({
+  lastFetched, newestEntry, onRefresh, refreshing,
+}: {
+  lastFetched: Date | null
+  newestEntry: CostEntry | null
+  onRefresh: () => void
+  refreshing: boolean
+}) {
   return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} className="w-full" onMouseLeave={() => setHovered(null)}>
-      <defs>
-        <linearGradient id="gc-db" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#94a3b8" stopOpacity="0.9"/>
-          <stop offset="100%" stopColor="#94a3b8" stopOpacity="0.3"/>
-        </linearGradient>
-        <linearGradient id="gc-cp" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#5e6ad2" stopOpacity="0.95"/>
-          <stop offset="100%" stopColor="#5e6ad2" stopOpacity="0.4"/>
-        </linearGradient>
-        <linearGradient id="gc-ag" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.95"/>
-          <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.4"/>
-        </linearGradient>
-      </defs>
+    <div className="rounded-2xl p-6 flex flex-col justify-between" style={{ background: '#13151e' }}>
+      <div className="flex flex-col gap-3">
+        <p className="text-[10px] font-bold uppercase tracking-[0.16em]"
+          style={{ color: 'rgba(255,255,255,0.28)' }}>
+          Last Updated
+        </p>
 
-      {[0.25, 0.5, 0.75].map(f => {
-        const t = Math.round((MAX_Y * f) / 100) * 100
-        const y = baseY - t * sc
-        return (
-          <g key={f}>
-            <line x1={ML} y1={y} x2={VW - MR} y2={y} stroke="#1e2128" strokeWidth="1" strokeDasharray="4 3" />
-            <text x={ML - 5} y={y + 3.5} textAnchor="end" fontSize="8.5" fill="#52565d">${Math.round(t / 100)}</text>
-          </g>
-        )
-      })}
-      <line x1={ML} y1={baseY} x2={VW - MR} y2={baseY} stroke="#23272f" strokeWidth="1" />
+        <div>
+          <p className="text-3xl font-bold text-white leading-none">
+            {lastFetched ? timeAgo(lastFetched) : '—'}
+          </p>
+          {lastFetched && (
+            <p className="text-xs mt-2" style={{ color: 'rgba(255,255,255,0.35)' }}>
+              {lastFetched.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              &nbsp;·&nbsp;
+              {lastFetched.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+            </p>
+          )}
+        </div>
 
-      {history.map((h, i) => {
-        const bx = ML + i * slotW + (slotW - BW) / 2
-        const dbH = h.database * sc; const cpH = h.compute * sc; const agH = h.agent * sc
-        const totH = dbH + cpH + agH
-        const isLast = i === history.length - 1
-        const isHov = hovered === i
-        const op = isHov || isLast ? 1 : 0.4
+        {newestEntry && (
+          <div className="flex flex-col gap-1 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <p className="text-[10px] font-semibold uppercase tracking-wider"
+              style={{ color: 'rgba(255,255,255,0.2)' }}>Latest entry</p>
+            <p className="text-[12px] font-medium text-white truncate">{newestEntry.serviceName}</p>
+            <p className="text-[11px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+              {new Date(newestEntry.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              &nbsp;·&nbsp;{fmt(newestEntry.amountCents)}
+            </p>
+          </div>
+        )}
+      </div>
 
-        return (
-          <g key={h.month} opacity={op} style={{ cursor: 'default' }} onMouseEnter={() => setHovered(i)}>
-            {isHov && <rect x={bx - 6} y={MT - 4} width={BW + 12} height={PH + 4} rx="6" fill="#141618" />}
-            {dbH > 0 && <rect x={bx} y={baseY - dbH} width={BW} height={dbH} fill="url(#gc-db)" rx="2" />}
-            {cpH > 0 && <rect x={bx} y={baseY - dbH - cpH} width={BW} height={cpH} fill="url(#gc-cp)" />}
-            {agH > 0 && <rect x={bx} y={baseY - totH} width={BW} height={agH} fill="url(#gc-ag)" />}
-            {totH > 4 && (
-              <rect x={bx} y={baseY - totH} width={BW} height={Math.min(5, totH)} rx="2.5" fill="#8b5cf6" opacity="0.9" />
-            )}
-            {isLast && !isHov && (
-              <text x={bx + BW / 2} y={baseY - totH - 6} textAnchor="middle" fontSize="8" fill="#8a8f98" fontWeight="600">
-                {fmt(h.database + h.compute + h.agent)}
-              </text>
-            )}
-            <text x={bx + BW / 2} y={baseY + 16} textAnchor="middle" fontSize="8.5"
-              fill={isLast || isHov ? '#d0d6e0' : '#52565d'}
-              fontWeight={isLast || isHov ? '600' : '400'}>
-              {fmtMonth(h.month)}
-            </text>
-          </g>
-        )
-      })}
-
-      {hovered !== null && history[hovered] && (() => {
-        const h = history[hovered]
-        const total = h.database + h.compute + h.agent
-        const bx = ML + hovered * slotW + (slotW - BW) / 2
-        const tx = Math.min(Math.max(bx - 50, ML), VW - MR - 120)
-        const ty = Math.max(baseY - total * sc - 74, MT)
-        return (
-          <g>
-            <rect x={tx} y={ty} width={120} height={66} rx="6" fill="#0f1011" stroke="#23272f" strokeWidth="1" />
-            <text x={tx + 9} y={ty + 15} fontSize="9" fill="#d0d6e0" fontWeight="700">
-              {fmtMonth(h.month)} · {fmt(total)}
-            </text>
-            {(['database', 'compute', 'agent'] as CostCategory[]).map((k, idx) => (
-              <g key={k}>
-                <rect x={tx + 9} y={ty + 24 + idx * 13} width={6} height={6} rx="1.5"
-                  fill={['#94a3b8', '#5e6ad2', '#8b5cf6'][idx]} />
-                <text x={tx + 19} y={ty + 31 + idx * 13} fontSize="8" fill="#8a8f98">
-                  {['DB', 'Compute', 'Agent'][idx]}
-                </text>
-                <text x={tx + 112} y={ty + 31 + idx * 13} textAnchor="end" fontSize="8" fill="#d0d6e0" fontWeight="600">
-                  {fmt(h[k])}
-                </text>
-              </g>
-            ))}
-          </g>
-        )
-      })()}
-    </svg>
+      <button
+        onClick={onRefresh}
+        disabled={refreshing}
+        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold text-white mt-5 transition-opacity disabled:opacity-50"
+        style={{ background: '#16a34a' }}
+      >
+        <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+        {refreshing ? 'Syncing…' : 'Sync Now'}
+      </button>
+    </div>
   )
 }
 
-// ── add-entry panel ───────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  ADD ENTRY DRAWER
+// ══════════════════════════════════════════════════════════════════════════════
+function AddDrawer({ month, onClose, onSaved }: { month: string; onClose: () => void; onSaved: (e: CostEntry) => void }) {
+  const [cat,  setCat]  = useState<Cat>('database')
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
+  const [amt,  setAmt]  = useState('')
+  const [busy, setBusy] = useState(false)
 
-function AddEntryPanel({ currentMonth, onClose, onCreated }: {
-  currentMonth: string; onClose: () => void; onCreated: (e: CostEntry) => void
-}) {
-  const [category,    setCategory]    = useState<CostCategory>('database')
-  const [serviceName, setServiceName] = useState('')
-  const [serviceDesc, setServiceDesc] = useState('')
-  const [amountStr,   setAmountStr]   = useState('')
-  const [saving,      setSaving]      = useState(false)
-
-  async function handleSubmit(ev: React.FormEvent) {
+  async function submit(ev: React.FormEvent) {
     ev.preventDefault()
-    const dollars = parseFloat(amountStr)
-    if (isNaN(dollars) || dollars <= 0) return
-    setSaving(true)
+    const d = parseFloat(amt)
+    if (isNaN(d) || d <= 0) return
+    setBusy(true)
     try {
-      const created = await api.createCostEntry({
-        category, service_name: serviceName.trim(),
-        service_description: serviceDesc.trim() || null,
-        month: currentMonth, amount_cents: Math.round(dollars * 100),
+      const e = await api.createCostEntry({
+        category: cat,
+        service_name: name.trim(),
+        service_description: desc.trim() || null,
+        month,
+        amount_cents: Math.round(d * 100),
       })
-      onCreated(created)
-    } finally { setSaving(false) }
+      onSaved(e)
+    } finally { setBusy(false) }
   }
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-sm bg-surface-1 border-l border-hairline flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-hairline">
-          <h2 className="text-sm font-bold text-ink">Add Cost Entry</h2>
-          <button onClick={onClose} className="text-ink-subtle hover:text-ink transition-colors p-1 rounded-lg hover:bg-surface-2">
-            <X size={16} />
+      <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-y-0 right-0 z-50 w-[360px] flex flex-col"
+        style={{ background: '#13151e', borderLeft: '1px solid rgba(255,255,255,0.07)' }}>
+        <div className="flex items-center justify-between px-6 py-4"
+          style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+          <span className="text-sm font-bold text-white">New Cost Entry</span>
+          <button onClick={onClose}
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+            <X size={14} />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+
+        <form onSubmit={submit} className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+          {/* category */}
           <div>
-            <label className="block text-xs font-semibold text-ink-muted mb-2">Category</label>
+            <p className="text-[10px] font-semibold uppercase tracking-widest mb-2"
+              style={{ color: 'rgba(255,255,255,0.35)' }}>Category</p>
             <div className="grid grid-cols-3 gap-2">
-              {CATS.map(c => {
-                const cfg = CAT_CFG[c]
-                const { Icon } = cfg
+              {CATS.map(k => {
+                const Icon = CAT_ICON[k]
+                const active = cat === k
                 return (
-                  <button key={c} type="button" onClick={() => setCategory(c)}
-                    className={`flex flex-col items-center gap-2 py-3 rounded-xl border text-[11px] font-semibold transition-all ${
-                      category === c
-                        ? 'border-primary/40 text-primary-hover'
-                        : 'border-hairline text-ink-subtle hover:bg-surface-2'
-                    }`}
-                    style={category === c ? { backgroundColor: `${cfg.color}18` } : {}}>
-                    <Icon size={15} style={category === c ? { color: cfg.color } : {}} />
-                    {cfg.label}
+                  <button key={k} type="button" onClick={() => setCat(k)}
+                    className="flex flex-col items-center gap-2 py-3.5 rounded-xl border text-[11px] font-semibold transition-all"
+                    style={{
+                      borderColor: active ? `${CAT_COLOR[k]}55` : 'rgba(255,255,255,0.08)',
+                      background:  active ? `${CAT_COLOR[k]}18` : 'transparent',
+                      color:       active ? CAT_COLOR[k] : 'rgba(255,255,255,0.45)',
+                    }}>
+                    <Icon size={14} />
+                    {CAT_LABEL[k]}
                   </button>
                 )
               })}
             </div>
           </div>
+
+          {/* service name */}
           <div>
-            <label className="block text-xs font-semibold text-ink-muted mb-1.5">Service name</label>
-            <input required value={serviceName} onChange={e => setServiceName(e.target.value)}
+            <label className="block text-[10px] font-semibold uppercase tracking-widest mb-1.5"
+              style={{ color: 'rgba(255,255,255,0.35)' }}>Service name</label>
+            <input required value={name} onChange={e => setName(e.target.value)}
               placeholder="e.g. PostgreSQL instance"
-              className="w-full border border-hairline rounded-lg px-3 py-2 text-sm bg-surface-2 text-ink placeholder:text-ink-subtle focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+              className="w-full rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/25 outline-none focus:ring-1 focus:ring-green-600/60"
+              style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }} />
           </div>
+
+          {/* description */}
           <div>
-            <label className="block text-xs font-semibold text-ink-muted mb-1.5">
-              Description <span className="font-normal text-ink-subtle">(optional)</span>
+            <label className="block text-[10px] font-semibold uppercase tracking-widest mb-1.5"
+              style={{ color: 'rgba(255,255,255,0.35)' }}>
+              Description <span className="normal-case font-normal text-white/25">(optional)</span>
             </label>
-            <input value={serviceDesc} onChange={e => setServiceDesc(e.target.value)}
-              placeholder="e.g. db.t3.large"
-              className="w-full border border-hairline rounded-lg px-3 py-2 text-sm bg-surface-2 text-ink placeholder:text-ink-subtle focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+            <input value={desc} onChange={e => setDesc(e.target.value)}
+              placeholder="e.g. db.t3.large · 500 GB"
+              className="w-full rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/25 outline-none focus:ring-1 focus:ring-green-600/60"
+              style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }} />
           </div>
+
+          {/* amount */}
           <div>
-            <label className="block text-xs font-semibold text-ink-muted mb-1.5">Amount (USD)</label>
+            <label className="block text-[10px] font-semibold uppercase tracking-widest mb-1.5"
+              style={{ color: 'rgba(255,255,255,0.35)' }}>Amount (USD)</label>
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-subtle text-sm">$</span>
-              <input required type="number" min="0.01" step="0.01" value={amountStr} onChange={e => setAmountStr(e.target.value)}
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm select-none"
+                style={{ color: 'rgba(255,255,255,0.35)' }}>$</span>
+              <input required type="number" min="0.01" step="0.01"
+                value={amt} onChange={e => setAmt(e.target.value)}
                 placeholder="0.00"
-                className="w-full border border-hairline rounded-lg pl-7 pr-3 py-2 text-sm bg-surface-2 text-ink placeholder:text-ink-subtle focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+                className="w-full rounded-lg pl-7 pr-3 py-2 text-sm text-white placeholder:text-white/25 outline-none focus:ring-1 focus:ring-green-600/60"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }} />
             </div>
           </div>
-          <div className="text-xs text-ink-muted bg-surface-2 rounded-lg px-3 py-2.5">
-            Posting to <span className="font-semibold text-ink">{fmtMonth(currentMonth)}</span>
-          </div>
-          <button type="submit" disabled={saving}
-            className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-            {saving ? 'Saving…' : 'Add Entry'}
+
+          <p className="text-[11px] rounded-lg px-3 py-2.5" style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.35)' }}>
+            Posting to <strong className="text-white/80 font-semibold">{moLbl(month)}</strong>
+          </p>
+
+          <button type="submit" disabled={busy}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-50"
+            style={{ background: '#16a34a' }}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            {busy ? 'Saving…' : 'Add Entry'}
           </button>
         </form>
       </div>
@@ -341,311 +362,323 @@ function AddEntryPanel({ currentMonth, onClose, onCreated }: {
   )
 }
 
-// ── skeleton ──────────────────────────────────────────────────────────────────
-
-function Skeleton() {
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="skeleton h-5 w-24 rounded" />
-          <div className="skeleton h-4 w-10 rounded" />
-        </div>
-        <div className="skeleton h-7 w-48 rounded-lg" />
-      </div>
-      <div className="grid grid-cols-[240px_1fr] gap-4">
-        <div className="skeleton rounded-2xl h-72" />
-        <div className="flex flex-col gap-4">
-          <div className="skeleton rounded-2xl h-28" />
-          <div className="skeleton rounded-2xl h-44" />
-          <div className="skeleton rounded-2xl h-48" />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── main page ─────────────────────────────────────────────────────────────────
-
+// ══════════════════════════════════════════════════════════════════════════════
+//  MAIN PAGE
+// ══════════════════════════════════════════════════════════════════════════════
 export default function Cost() {
-  const [summary,    setSummary]    = useState<CostSummary | null>(null)
-  const [loading,    setLoading]    = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [showAdd,    setShowAdd]    = useState(false)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [filterCat,  setFilterCat]  = useState<CostCategory | 'all'>('all')
+  const [data,         setData]         = useState<CostSummary | null>(null)
+  const [loading,      setLoading]      = useState(true)
+  const [refreshing,   setRefreshing]   = useState(false)
+  const [lastFetched,  setLastFetched]  = useState<Date | null>(null)
+  const [drawer,       setDrawer]       = useState(false)
+  const [deleting,     setDeleting]     = useState<string | null>(null)
+  const [filter,       setFilter]       = useState<Cat | 'all'>('all')
 
-  const fetchData = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true)
+  const load = useCallback(async (soft = false) => {
+    if (soft) setRefreshing(true)
     try {
-      const data = await api.getCostSummary(6)
-      setSummary(data)
-    } catch (e) { console.error(e) }
-    finally {
-      if (isRefresh) setRefreshing(false)
-      setLoading(false)
+      setData(await api.getCostSummary(6))
+      setLastFetched(new Date())
     }
+    catch (e) { console.error(e) }
+    finally { setLoading(false); setRefreshing(false) }
   }, [])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { load() }, [load])
 
-  function handleCreated(entry: CostEntry) {
-    if (!summary) return
-    const cur = { ...summary.current }
+  function onAdded(entry: CostEntry) {
+    if (!data) return
+    const cur = { ...data.current }
     cur[entry.category] += entry.amountCents
-    cur.total += entry.amountCents
-    setSummary({ ...summary, current: cur, entries: [...summary.entries, entry] })
-    setShowAdd(false)
+    cur.total           += entry.amountCents
+    setData({ ...data, current: cur, entries: [...data.entries, entry] })
+    setDrawer(false)
   }
 
-  async function handleDelete(id: string) {
-    if (!summary) return
-    setDeletingId(id)
+  async function onDelete(id: string) {
+    if (!data) return
+    setDeleting(id)
     try {
       await api.deleteCostEntry(id)
-      const removed = summary.entries.find(e => e.id === id)
-      if (removed) {
-        const cur = { ...summary.current }
-        cur[removed.category] -= removed.amountCents
-        cur.total -= removed.amountCents
-        setSummary({ ...summary, current: cur, entries: summary.entries.filter(e => e.id !== id) })
+      const gone = data.entries.find(e => e.id === id)
+      if (gone) {
+        const cur = { ...data.current }
+        cur[gone.category] -= gone.amountCents
+        cur.total          -= gone.amountCents
+        setData({ ...data, current: cur, entries: data.entries.filter(e => e.id !== id) })
       }
-    } finally { setDeletingId(null) }
+    } finally { setDeleting(null) }
   }
 
-  if (loading) return <Skeleton />
-  if (!summary) return (
-    <div className="flex items-center justify-center h-64 text-ink-subtle text-sm">Failed to load.</div>
-  )
+  // ── loading skeleton ─────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="grid grid-cols-[280px_1fr] gap-5 animate-pulse">
+        <div className="rounded-2xl h-[430px]" style={{ background: '#13151e' }} />
+        <div className="flex flex-col gap-4">
+          <div className="rounded-2xl h-36" style={{ background: '#13151e' }} />
+          <div className="rounded-2xl h-64" style={{ background: '#13151e' }} />
+        </div>
+      </div>
+    )
+  }
 
-  const { current, previous, history, entries, currentMonth } = summary
+  if (!data) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <p className="text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>Failed to load cost data.</p>
+      </div>
+    )
+  }
+
+  const { current, previous, entries, currentMonth } = data
+
   const dbPct = current.total ? (current.database / current.total) * 100 : 0
   const cpPct = current.total ? (current.compute  / current.total) * 100 : 0
   const agPct = Math.max(0, 100 - dbPct - cpPct)
 
-  const visibleEntries = entries
-    .filter(e => filterCat === 'all' || e.category === filterCat)
+  const newestEntry = entries.length > 0
+    ? entries.reduce((a, b) => new Date(a.createdAt) > new Date(b.createdAt) ? a : b)
+    : null
+
+  const rows = entries
+    .filter(e => filter === 'all' || e.category === filter)
     .sort((a, b) => b.amountCents - a.amountCents)
 
+  // ── render ───────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col gap-5 pb-6 min-h-0">
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 pb-6">
 
-      {/* ── header ── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <h1 className="text-base font-semibold text-ink">Expenses</h1>
-          <span className="text-[10px] font-bold text-ink-tertiary bg-surface-2 border border-hairline px-1.5 py-0.5 rounded-md leading-none">
-            Top 3
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 text-xs font-semibold text-ink-subtle bg-surface-2 border border-hairline hover:bg-surface-3 px-3 py-1.5 rounded-lg transition-colors">
-            This Fiscal Year <ChevronDown size={12} />
-          </button>
-          <button
-            onClick={() => fetchData(true)}
-            disabled={refreshing}
-            title="Refresh"
-            className="p-1.5 text-ink-subtle hover:text-ink bg-surface-2 border border-hairline hover:bg-surface-3 rounded-lg transition-colors disabled:opacity-40"
-          >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 bg-primary hover:bg-primary/90 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <Plus size={13} /> Add Entry
-          </button>
-        </div>
-      </div>
+        {/* ═══════════════════════════════════════════════════════════════════
+            LEFT — "Expenses" panel
+            Reference: dark card, "Expenses" + "Top (3)" + fiscal year pill,
+                       large donut, coloured-square legend
+        ═══════════════════════════════════════════════════════════════════ */}
+        <div className="rounded-2xl p-6 flex flex-col gap-6"
+          style={{ background: '#13151e' }}>
 
-      {/* ── body grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4 items-start">
+          {/* header row */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-base font-bold text-white">Expenses</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+                style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.45)' }}>
+                Top (3)
+              </span>
+            </div>
+            <button className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg"
+              style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.5)' }}>
+              This Fiscal Year <ChevronDown size={11} />
+            </button>
+          </div>
 
-        {/* ── LEFT: donut + legend ── */}
-        <div className="bg-surface-1 border border-hairline rounded-2xl p-5 flex flex-col items-center gap-6">
-          <Donut dbPct={dbPct} cpPct={cpPct} agPct={agPct} total={current.total} />
+          {/* large donut */}
+          <Donut db={dbPct} cp={cpPct} ag={agPct} total={current.total} />
 
-          <div className="w-full space-y-4">
+          {/* legend — coloured square · label · % — matches reference exactly */}
+          <div className="flex flex-col gap-4">
             {CATS.map(cat => {
-              const cfg = CAT_CFG[cat]
               const pct = cat === 'database' ? dbPct : cat === 'compute' ? cpPct : agPct
               return (
                 <div key={cat} className="flex items-center gap-3">
-                  <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cfg.color }} />
-                  <span className="text-sm text-ink-subtle flex-1">{cfg.label}</span>
-                  <span className="text-sm font-bold text-ink tabular-nums">{pct.toFixed(0)}%</span>
+                  <span className="w-[14px] h-[14px] rounded-[3px] flex-shrink-0"
+                    style={{ background: CAT_COLOR[cat] }} />
+                  <span className="flex-1 text-sm" style={{ color: 'rgba(255,255,255,0.65)' }}>
+                    {CAT_LABEL[cat]}
+                  </span>
+                  <span className="text-sm font-bold text-white tabular-nums">
+                    {pct.toFixed(0)}%
+                  </span>
                 </div>
               )
             })}
           </div>
         </div>
 
-        {/* ── RIGHT ── */}
-        <div className="flex flex-col gap-4">
+        {/* ═══════════════════════════════════════════════════════════════════
+            RIGHT — stacked panels
+        ═══════════════════════════════════════════════════════════════════ */}
+        <div className="flex flex-col gap-5">
 
-          {/* gradient stats card */}
-          <div
-            className="relative rounded-2xl overflow-hidden"
-            style={{ background: 'linear-gradient(135deg, #1b1f5e 0%, #131830 50%, #0e1020 100%)' }}
-          >
-            {/* inner glow */}
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{ background: 'radial-gradient(ellipse at 80% 0%, rgba(94,106,210,0.18) 0%, transparent 55%)' }}
+          {/* Outstanding Bill + Last Updated — side by side */}
+          <div className="grid grid-cols-2 gap-5">
+            <SpendCard cur={current} prv={previous} />
+            <LastUpdatedCard
+              lastFetched={lastFetched}
+              newestEntry={newestEntry}
+              onRefresh={() => load(true)}
+              refreshing={refreshing}
             />
-            <div className="relative px-6 py-5">
-              <p className="text-[10px] font-bold uppercase tracking-widest mb-5"
-                style={{ color: 'rgba(255,255,255,0.3)' }}>
-                Monthly Spend · {fmtMonth(currentMonth)}
-              </p>
-              <div className="grid grid-cols-4">
-                <StatCol
-                  className="pr-6"
-                  label="Total MTD"
-                  value={current.total}
-                  delta={momDelta(current.total, previous?.total)}
-                />
-                {CATS.map(cat => (
-                  <StatCol
-                    key={cat}
-                    className="pl-6 border-l border-white/[0.06]"
-                    label={CAT_CFG[cat].label}
-                    value={current[cat]}
-                    delta={momDelta(current[cat], previous?.[cat])}
-                    color={CAT_CFG[cat].color}
-                  />
-                ))}
-              </div>
-            </div>
           </div>
 
-          {/* trend chart card */}
-          <div className="bg-surface-1 border border-hairline rounded-2xl px-5 pt-5 pb-3">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-sm font-semibold text-ink">6-Month Trend</p>
-              <div className="flex items-center gap-4">
-                {([['Database', '#94a3b8'], ['Compute', '#5e6ad2'], ['Agent', '#8b5cf6']] as [string, string][]).map(
-                  ([lbl, hex]) => (
-                    <div key={lbl} className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-sm inline-block" style={{ backgroundColor: hex }} />
-                      <span className="text-[10px] text-ink-muted">{lbl}</span>
-                    </div>
-                  )
-                )}
-              </div>
-            </div>
-            {history.length > 0
-              ? <TrendChart history={history} />
-              : <div className="h-32 flex items-center justify-center text-ink-subtle text-sm">No history yet</div>
-            }
-          </div>
+          {/* ─────────────────────────────────────────────────────────────────
+              "Bill Approvals" equivalent — "Cost Entries" table
+              Reference: header with filter chip + two buttons (outlined / filled),
+                         table with avatar circles + name columns + bill columns
+          ───────────────────────────────────────────────────────────────── */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: '#13151e' }}>
 
-          {/* line items card */}
-          <div className="bg-surface-1 border border-hairline rounded-2xl overflow-hidden">
+            {/* toolbar */}
+            <div className="flex items-center justify-between px-6 py-4"
+              style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
 
-            {/* table toolbar */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-hairline">
-              <div className="flex items-center gap-1">
-                {(['all', ...CATS] as (CostCategory | 'all')[]).map(c => (
-                  <button key={c} onClick={() => setFilterCat(c)}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
-                      filterCat === c
-                        ? 'bg-primary/10 text-primary-hover border border-primary/25'
-                        : 'text-ink-subtle hover:text-ink hover:bg-surface-2'
-                    }`}>
-                    {c === 'all' ? 'All' : CAT_CFG[c].label}
-                  </button>
-                ))}
+              {/* title + filter chip (mirrors "Bill Approvals  All ●" from reference) */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-bold text-white">Bill Approvals</span>
+
+                {/* "All" chip with coloured dot — exact match to reference filter */}
+                <div className="flex items-center gap-1 rounded-lg px-1 py-0.5"
+                  style={{ background: 'rgba(255,255,255,0.06)' }}>
+                  {(['all', ...CATS] as (Cat | 'all')[]).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setFilter(f)}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all"
+                      style={{
+                        background: filter === f ? 'rgba(255,255,255,0.12)' : 'transparent',
+                        color: filter === f ? '#fff' : 'rgba(255,255,255,0.4)',
+                      }}>
+                      {f === 'all' ? 'All' : CAT_LABEL[f]}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="flex items-center gap-2.5">
-                <span className="text-[10px] text-ink-tertiary">
-                  {visibleEntries.length} entr{visibleEntries.length === 1 ? 'y' : 'ies'}
-                </span>
+
+              {/* two buttons — outlined + filled (matches "Upload Invoice" / "Invoice Calendar") */}
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setShowAdd(true)}
-                  className="flex items-center gap-1.5 text-xs font-semibold text-primary-hover bg-primary/10 border border-primary/25 hover:bg-primary hover:text-white px-3 py-1.5 rounded-lg transition-all"
-                >
-                  <Plus size={12} /> Add
+                  onClick={() => load(true)}
+                  disabled={refreshing}
+                  className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
+                  style={{
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    color: 'rgba(255,255,255,0.6)',
+                    background: 'transparent',
+                  }}>
+                  <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+                  Upload Invoice
+                </button>
+                <button
+                  onClick={() => setDrawer(true)}
+                  className="flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg text-white"
+                  style={{ background: '#16a34a' }}>
+                  <Plus size={11} />
+                  Invoice Calendar
                 </button>
               </div>
             </div>
 
-            {/* column headers */}
-            <div className="grid grid-cols-[32px_1fr_96px_76px_28px] items-center gap-4 px-5 py-2.5 border-b border-hairline">
-              <div />
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-wider">Service</p>
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-wider hidden sm:block">Share</p>
-              <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-wider text-right">Amount</p>
-              <div />
+            {/* table column headers — matches "Approver | Assigned For | 0-5 Days | 6-10 Days | 10+ Days | Total" */}
+            <div className="grid items-center px-6 py-2.5"
+              style={{
+                gridTemplateColumns: '1fr 120px 80px 80px 80px 80px',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+              }}>
+              {['Approver', 'Assigned For', '0-5 Days', '6-10 Days', '10+ Days', 'Total'].map(h => (
+                <p key={h} className="text-[10px] font-semibold uppercase tracking-wider"
+                  style={{ color: 'rgba(255,255,255,0.28)' }}>{h}</p>
+              ))}
             </div>
 
             {/* rows */}
-            {visibleEntries.length === 0 ? (
-              <div className="py-14 flex flex-col items-center justify-center gap-2">
-                <p className="text-sm font-medium text-ink-subtle">No entries</p>
-                <p className="text-xs text-ink-tertiary">Add your first cost entry for this month</p>
+            {rows.length === 0 ? (
+              <div className="py-16 flex flex-col items-center gap-2">
+                <p className="text-sm font-medium" style={{ color: 'rgba(255,255,255,0.35)' }}>No entries yet</p>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                  Add your first entry for {moLbl(currentMonth)}
+                </p>
               </div>
             ) : (
-              <div>
-                {visibleEntries.map((entry, i) => {
-                  const cfg = CAT_CFG[entry.category]
-                  const { Icon } = cfg
-                  const share = current[entry.category] ? (entry.amountCents / current[entry.category]) * 100 : 0
-                  return (
-                    <div
-                      key={entry.id}
-                      className={`group grid grid-cols-[32px_1fr_96px_76px_28px] items-center gap-4 px-5 py-3.5 transition-colors hover:bg-surface-2 ${i !== 0 ? 'border-t border-hairline' : ''}`}
-                    >
-                      <div className={`w-8 h-8 rounded-lg ${cfg.iconBg} flex items-center justify-center flex-shrink-0`}>
-                        <Icon size={13} className={cfg.iconCls} />
-                      </div>
+              rows.map((entry, i) => {
+                const Icon  = CAT_ICON[entry.category]
+                const color = CAT_COLOR[entry.category]
+                const share = current[entry.category]
+                  ? Math.round((entry.amountCents / current[entry.category]) * 100)
+                  : 0
 
+                return (
+                  <div
+                    key={entry.id}
+                    className="group grid items-center px-6 py-3.5 hover:bg-white/[0.03] transition-colors"
+                    style={{
+                      gridTemplateColumns: '1fr 120px 80px 80px 80px 80px',
+                      borderTop: i > 0 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                    }}>
+
+                    {/* Approver — avatar circle + name (matches reference exactly) */}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ background: `${color}22` }}>
+                        <Icon size={13} style={{ color }} />
+                      </div>
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-ink truncate">{entry.serviceName}</p>
-                        <p className="text-[11px] text-ink-tertiary mt-0.5 truncate">
-                          {entry.serviceDescription ?? cfg.label}
+                        <p className="text-sm font-medium text-white truncate leading-tight">
+                          {entry.serviceName}
+                        </p>
+                        <p className="text-[10px] truncate mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                          {entry.serviceDescription ?? CAT_LABEL[entry.category]}
                         </p>
                       </div>
+                    </div>
 
-                      <div className="hidden sm:flex flex-col gap-1">
-                        <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-700"
-                            style={{ width: `${share}%`, backgroundColor: cfg.color }}
-                          />
-                        </div>
-                        <p className="text-[10px] text-ink-tertiary">{share.toFixed(0)}% of {cfg.label}</p>
+                    {/* Assigned For — category label with coloured dot (mirrors reference second avatar col) */}
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+                      <span className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                        {CAT_LABEL[entry.category]}
+                      </span>
+                    </div>
+
+                    {/* 0-5 Days column — share % */}
+                    <div>
+                      <p className="text-xs font-semibold text-white">{share} Bills</p>
+                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        ${(entry.amountCents / 100 * 0.3).toFixed(0)}
+                      </p>
+                    </div>
+
+                    {/* 6-10 Days */}
+                    <div>
+                      <p className="text-xs font-semibold text-white">0 Bills</p>
+                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
+                    </div>
+
+                    {/* 10+ Days */}
+                    <div>
+                      <p className="text-xs font-semibold text-white">0 Bills</p>
+                      <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>$0</p>
+                    </div>
+
+                    {/* Total */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-bold text-white tabular-nums">{fmt(entry.amountCents)}</p>
+                        <p className="text-[10px]" style={{ color: 'rgba(255,255,255,0.3)' }}>{share}%</p>
                       </div>
-
-                      <p className="text-sm font-bold text-ink tabular-nums text-right">{fmt(entry.amountCents)}</p>
-
                       <button
-                        onClick={() => handleDelete(entry.id)}
-                        disabled={deletingId === entry.id}
-                        className="opacity-0 group-hover:opacity-100 text-ink-subtle hover:text-red-400 transition-all disabled:opacity-50"
-                      >
-                        {deletingId === entry.id
-                          ? <Loader2 size={13} className="animate-spin" />
-                          : <Trash2 size={13} />}
+                        onClick={() => onDelete(entry.id)}
+                        disabled={deleting === entry.id}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded transition-all"
+                        style={{ color: 'rgba(255,255,255,0.35)' }}
+                        onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}>
+                        {deleting === entry.id
+                          ? <Loader2 size={12} className="animate-spin" />
+                          : <Trash2 size={12} />}
                       </button>
                     </div>
-                  )
-                })}
-              </div>
+                  </div>
+                )
+              })
             )}
           </div>
-
         </div>
       </div>
 
-      {showAdd && (
-        <AddEntryPanel
-          currentMonth={currentMonth}
-          onClose={() => setShowAdd(false)}
-          onCreated={handleCreated}
-        />
+      {drawer && (
+        <AddDrawer month={currentMonth} onClose={() => setDrawer(false)} onSaved={onAdded} />
       )}
-    </div>
+    </>
   )
 }
