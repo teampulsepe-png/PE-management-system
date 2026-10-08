@@ -1621,7 +1621,7 @@ function RolesTab({ roles }: { roles: Role[] }) {
 
 // ── Access Requests tab (admin only) ──────────────────────────────────────────
 
-const ROLE_OPTIONS = ['user', 'lead', 'head', 'admin']
+const ACCESS_ROLE_OPTIONS = ['user', 'lead', 'head', 'admin']
 
 function AccessRequestsTab() {
   const [requests, setRequests] = useState<MemberRequest[]>([])
@@ -1735,7 +1735,7 @@ function AccessRequestsTab() {
                 onChange={e => setSelectedRole(e.target.value)}
                 className="w-full appearance-none text-xs px-3 py-2 pr-7 rounded-lg border border-hairline bg-surface-2 focus:outline-none focus:border-primary text-ink"
               >
-                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
+                {ACCESS_ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
               </select>
               <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-subtle pointer-events-none" />
             </div>
