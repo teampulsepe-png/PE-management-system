@@ -8,6 +8,7 @@ interface AppContextType {
   sidebarOpen: boolean
   toggleSidebar: () => void
   currentUser: CurrentUser | null
+  userLoading: boolean
   teamPermissions: TeamPermissions | null
   refreshTeamPermissions: () => void
   notifications: AppNotification[]
@@ -50,6 +51,7 @@ function parseSSENotification(raw: string): AppNotification | null {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [userLoading, setUserLoading] = useState(true)
   const [teamPermissions, setTeamPermissions] = useState<TeamPermissions | null>(null)
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [theme, setThemeState] = useState<Theme>(() => {
@@ -91,7 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.getUser().then(user => {
       setCurrentUser(user)
       if (user.teamId) fetchTeamPermissions(user.teamId)
-    }).catch(console.error)
+    }).catch(console.error).finally(() => setUserLoading(false))
   }, [fetchTeamPermissions])
 
   useEffect(() => {
@@ -122,7 +124,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <AppContext.Provider value={{
       sidebarOpen, toggleSidebar,
-      currentUser,
+      currentUser, userLoading,
       teamPermissions, refreshTeamPermissions,
       notifications, unreadCount, markAllRead,
       refreshNotifications: fetchNotifications,
