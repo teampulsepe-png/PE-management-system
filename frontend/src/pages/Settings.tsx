@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { User, Users, Building2, ShieldCheck, Plus, Pencil, Trash2, X, ChevronDown, Check, AlertTriangle, ArrowLeft, UserPlus, Sun, Moon, Monitor, Palette, Crown, CheckSquare, Scale, GaugeCircle, LineSquiggle, Sparkles, Cog, LayoutList, DollarSign, Zap, Ticket as TicketIcon, BotMessageSquare } from 'lucide-react'
-import type { TeamPermissions } from '../types'
+import { User, Users, Building2, ShieldCheck, Plus, Pencil, Trash2, X, ChevronDown, Check, AlertTriangle, ArrowLeft, UserPlus, Sun, Moon, Monitor, Palette, Crown, CheckSquare, Scale, GaugeCircle, LineSquiggle, Sparkles, Cog, LayoutList, DollarSign, Zap, Ticket as TicketIcon, BotMessageSquare, Clock, XCircle, CheckCircle } from 'lucide-react'
+import type { TeamPermissions, MemberRequest } from '../types'
 import { useAppContext } from '../context/AppContext'
 import type { Theme } from '../context/AppContext'
 import { api } from '../api/teamPulseApi'
@@ -1619,20 +1619,177 @@ function RolesTab({ roles }: { roles: Role[] }) {
   )
 }
 
+// ── Access Requests tab (admin only) ──────────────────────────────────────────
+
+const ROLE_OPTIONS = ['user', 'lead', 'head', 'admin']
+
+function AccessRequestsTab() {
+  const [requests, setRequests] = useState<MemberRequest[]>([])
+  const [loading, setLoading] = useState(true)
+  const [approveModal, setApproveModal] = useState<MemberRequest | null>(null)
+  const [rejectModal, setRejectModal] = useState<MemberRequest | null>(null)
+  const [selectedRole, setSelectedRole] = useState('user')
+  const [rejectReason, setRejectReason] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try { setRequests(await api.onboarding.listRequests('pending')) } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleApprove() {
+    if (!approveModal) return
+    setSaving(true)
+    try {
+      await api.onboarding.approveRequest(approveModal.id, selectedRole)
+      setApproveModal(null)
+      setSelectedRole('user')
+      await load()
+    } finally { setSaving(false) }
+  }
+
+  async function handleReject() {
+    if (!rejectModal) return
+    setSaving(true)
+    try {
+      await api.onboarding.rejectRequest(rejectModal.id, rejectReason || undefined)
+      setRejectModal(null)
+      setRejectReason('')
+      await load()
+    } finally { setSaving(false) }
+  }
+
+  if (loading) return <div className="text-xs text-ink-subtle py-8 text-center">Loading…</div>
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-sm font-semibold text-ink">Access Requests</p>
+          <p className="text-xs text-ink-subtle mt-0.5">{requests.length} pending</p>
+        </div>
+      </div>
+
+      {requests.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <CheckCircle size={28} className="text-ink-subtle mb-3" />
+          <p className="text-sm font-medium text-ink">All caught up</p>
+          <p className="text-xs text-ink-subtle mt-1">No pending access requests</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {requests.map(r => (
+            <div key={r.id} className="bg-surface-1 border border-hairline rounded-xl p-4 flex items-start gap-4">
+              <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 text-primary font-semibold text-sm">
+                {r.name.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-ink">{r.name}</p>
+                <p className="text-xs text-ink-subtle">{r.email}</p>
+                <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-surface-3 text-ink-subtle border border-hairline">
+                    {r.requestedTeamName ?? 'No team'}
+                  </span>
+                  <span className="text-[10px] text-ink-tertiary">
+                    {new Date(r.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </span>
+                </div>
+                {r.note && (
+                  <p className="text-xs text-ink-muted mt-1.5 bg-surface-2 rounded-lg px-2.5 py-1.5 border border-hairline italic">"{r.note}"</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => { setRejectModal(r); setRejectReason('') }}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-red-400 bg-red-900/10 hover:bg-red-900/20 border border-red-900/30 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <XCircle size={12} />
+                  Reject
+                </button>
+                <button
+                  onClick={() => { setApproveModal(r); setSelectedRole('user') }}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-white bg-primary hover:bg-primary/90 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <CheckCircle size={12} />
+                  Approve
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Approve modal */}
+      {approveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-surface-1 rounded-xl border border-hairline shadow-xl w-full max-w-sm mx-4 p-6">
+            <p className="text-sm font-semibold text-ink mb-1">Approve request</p>
+            <p className="text-xs text-ink-subtle mb-4">Assign a role to <span className="font-medium text-ink">{approveModal.name}</span> before approving.</p>
+            <div className="relative mb-5">
+              <select
+                value={selectedRole}
+                onChange={e => setSelectedRole(e.target.value)}
+                className="w-full appearance-none text-xs px-3 py-2 pr-7 rounded-lg border border-hairline bg-surface-2 focus:outline-none focus:border-primary text-ink"
+              >
+                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
+              </select>
+              <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-subtle pointer-events-none" />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setApproveModal(null)} className="flex-1 px-3 py-1.5 text-xs font-medium text-ink-muted bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
+              <button onClick={handleApprove} disabled={saving} className="flex-1 px-3 py-1.5 text-xs font-semibold text-white bg-primary hover:bg-primary/90 disabled:opacity-50 rounded-lg transition-colors">
+                {saving ? 'Approving…' : 'Approve'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject modal */}
+      {rejectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-surface-1 rounded-xl border border-hairline shadow-xl w-full max-w-sm mx-4 p-6">
+            <p className="text-sm font-semibold text-ink mb-1">Reject request</p>
+            <p className="text-xs text-ink-subtle mb-3">Optionally provide a reason for <span className="font-medium text-ink">{rejectModal.name}</span>.</p>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              rows={3}
+              placeholder="Reason (optional)…"
+              className="w-full text-xs px-3 py-2 rounded-lg border border-hairline bg-surface-2 focus:outline-none focus:border-primary text-ink placeholder-subtle resize-none mb-4"
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setRejectModal(null)} className="flex-1 px-3 py-1.5 text-xs font-medium text-ink-muted bg-surface-2 hover:bg-surface-3 rounded-lg transition-colors">Cancel</button>
+              <button onClick={handleReject} disabled={saving} className="flex-1 px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition-colors">
+                {saving ? 'Rejecting…' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Settings page ────────────────────────────────────────────────────────
 
-type Tab = 'profile' | 'my-team' | 'my-teams' | 'users' | 'teams' | 'roles' | 'appearance'
+type Tab = 'profile' | 'my-team' | 'my-teams' | 'users' | 'teams' | 'roles' | 'appearance' | 'access-requests'
 
-interface TabDef { id: Tab; label: string; icon: React.ElementType; roles: string[] }
+interface TabDef { id: Tab; label: string; icon: React.ElementType; roles: string[]; badge?: () => React.ReactNode }
 
 const ALL_TABS: TabDef[] = [
-  { id: 'profile',    label: 'Profile',              icon: User,        roles: ['user', 'lead', 'head', 'admin'] },
-  { id: 'my-team',    label: 'My Team',               icon: Building2,   roles: ['lead'] },
-  { id: 'my-teams',   label: 'My Teams',              icon: Building2,   roles: ['head'] },
-  { id: 'users',      label: 'Users',                 icon: Users,       roles: ['admin'] },
-  { id: 'teams',      label: 'Teams',                 icon: Building2,   roles: ['admin'] },
-  { id: 'roles',      label: 'Roles & Permissions',   icon: ShieldCheck, roles: ['user', 'lead', 'head', 'admin'] },
-  { id: 'appearance', label: 'Appearance',             icon: Palette,     roles: ['user', 'lead', 'head', 'admin'] },
+  { id: 'profile',         label: 'Profile',              icon: User,        roles: ['user', 'lead', 'head', 'admin'] },
+  { id: 'my-team',         label: 'My Team',               icon: Building2,   roles: ['lead'] },
+  { id: 'my-teams',        label: 'My Teams',              icon: Building2,   roles: ['head'] },
+  { id: 'users',           label: 'Users',                 icon: Users,       roles: ['admin'] },
+  { id: 'teams',           label: 'Teams',                 icon: Building2,   roles: ['admin'] },
+  { id: 'access-requests', label: 'Access Requests',       icon: Clock,       roles: ['admin'] },
+  { id: 'roles',           label: 'Roles & Permissions',   icon: ShieldCheck, roles: ['user', 'lead', 'head', 'admin'] },
+  { id: 'appearance',      label: 'Appearance',             icon: Palette,     roles: ['user', 'lead', 'head', 'admin'] },
 ]
 
 export default function Settings() {
@@ -1641,6 +1798,7 @@ export default function Settings() {
 
   const visibleTabs = ALL_TABS.filter(t => t.roles.includes(role))
   const [activeTab, setActiveTab] = useState<Tab>('profile')
+  const [pendingCount, setPendingCount] = useState(0)
 
   // If the active tab isn't visible for this role, reset to first visible
   const effectiveTab = visibleTabs.find(t => t.id === activeTab) ? activeTab : visibleTabs[0]?.id ?? 'profile'
@@ -1656,6 +1814,12 @@ export default function Settings() {
     ])
     setTeams(teamsData)
     setRoles(rolesData)
+  }, [role])
+
+  useEffect(() => {
+    if (role === 'admin') {
+      api.onboarding.pendingCount().then(setPendingCount).catch(() => {})
+    }
   }, [role])
 
   const loadRoles = useCallback(async () => {
@@ -1692,18 +1856,24 @@ export default function Settings() {
             }`}>
             <tab.icon size={13} />
             {tab.label}
+            {tab.id === 'access-requests' && pendingCount > 0 && (
+              <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                {pendingCount}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
       {/* Tab content */}
-      {effectiveTab === 'profile'  && <ProfileTab />}
-      {effectiveTab === 'my-team'  && <MyTeamTab />}
-      {effectiveTab === 'my-teams' && <MyTeamsTab />}
-      {effectiveTab === 'users'    && <UsersTab teams={teams} onRefresh={loadAdminData} />}
-      {effectiveTab === 'teams'    && <TeamsTab teams={teams} onRefresh={loadAdminData} />}
-      {effectiveTab === 'roles'      && <RolesTab roles={roles} />}
-      {effectiveTab === 'appearance' && <AppearanceTab />}
+      {effectiveTab === 'profile'         && <ProfileTab />}
+      {effectiveTab === 'my-team'         && <MyTeamTab />}
+      {effectiveTab === 'my-teams'        && <MyTeamsTab />}
+      {effectiveTab === 'users'           && <UsersTab teams={teams} onRefresh={loadAdminData} />}
+      {effectiveTab === 'teams'           && <TeamsTab teams={teams} onRefresh={loadAdminData} />}
+      {effectiveTab === 'access-requests' && <AccessRequestsTab />}
+      {effectiveTab === 'roles'           && <RolesTab roles={roles} />}
+      {effectiveTab === 'appearance'      && <AppearanceTab />}
     </div>
   )
 }

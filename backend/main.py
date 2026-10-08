@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.db.database import engine, Base
 from backend.db import models  # noqa: F401
-from backend.routers import tasks, occurrences, members, user, activity, notifications, kpi, subscriptions, projects, push, tracker, workload, settings, cost, liveops, liveops_reports
+from backend.routers import tasks, occurrences, members, user, activity, notifications, kpi, subscriptions, projects, push, tracker, workload, settings, cost, liveops, liveops_reports, onboarding
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +53,7 @@ app.include_router(settings.router)
 app.include_router(cost.router)
 app.include_router(liveops.router)
 app.include_router(liveops_reports.router)
+app.include_router(onboarding.router)
 
 
 @app.get("/api/health")

@@ -309,6 +309,22 @@ export interface OpsTicket {
 
 // ── Cost ──────────────────────────────────────────────────────────────────────
 
+export type MemberRequestStatus = 'pending' | 'approved' | 'rejected'
+
+export interface MemberRequest {
+  id: string
+  email: string
+  name: string
+  requestedTeamId: string | null
+  requestedTeamName: string | null
+  note: string | null
+  status: MemberRequestStatus
+  rejectionReason: string | null
+  reviewedByName: string | null
+  reviewedAt: string | null
+  createdAt: string
+}
+
 export type CostCategory = 'database' | 'compute' | 'agent'
 
 export interface CostEntry {

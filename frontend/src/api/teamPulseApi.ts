@@ -1,4 +1,4 @@
-import type { Task, TaskOccurrence, TaskComment, TeamMember, CurrentUser, ActivityItem, AppNotification, RecurrenceType, OccurrenceStatus, KpiEntry, KpiEvaluation, KpiEvaluationEntry, KpiPdca, Department, AiTool, AiSubscription, AiSubscriptionAddon, Project, ProjectItem, UserAccessLog, TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask, SupervisorTask, SupervisorTaskSize, SupervisorTaskStatus, Role, MemberDetail, TeamWithMembers, TeamPermissions, CostEntry, CostSummary, LiveOpsBusinessUnit, LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig, LiveOpsMemberRoleRecord, LiveOpsSlaConfig, LiveOpsAssignment, LiveOpsComment, LiveOpsEvent, LiveOpsTicketListItem, LiveOpsTicketDetail, LiveOpsAssignableMember, LiveOpsAnalyticsSummary } from '../types'
+import type { Task, TaskOccurrence, TaskComment, TeamMember, CurrentUser, ActivityItem, AppNotification, RecurrenceType, OccurrenceStatus, KpiEntry, KpiEvaluation, KpiEvaluationEntry, KpiPdca, Department, AiTool, AiSubscription, AiSubscriptionAddon, Project, ProjectItem, UserAccessLog, TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask, SupervisorTask, SupervisorTaskSize, SupervisorTaskStatus, Role, MemberDetail, TeamWithMembers, TeamPermissions, CostEntry, CostSummary, LiveOpsBusinessUnit, LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig, LiveOpsMemberRoleRecord, LiveOpsSlaConfig, LiveOpsAssignment, LiveOpsComment, LiveOpsEvent, LiveOpsTicketListItem, LiveOpsTicketDetail, LiveOpsAssignableMember, LiveOpsAnalyticsSummary, MemberRequest } from '../types'
 
 const BASE = '/api/v1'
 
@@ -179,6 +179,22 @@ function mapSupervisorTask(t: ApiSupervisorTask): SupervisorTask {
     createdBy: t.created_by, createdAt: t.created_at,
     assignees: t.assignees.map(a => ({ memberId: a.member_id, memberName: a.member_name })),
     isOverdue: t.is_overdue,
+  }
+}
+
+function mapMemberRequest(r: Record<string, unknown>): MemberRequest {
+  return {
+    id: r.id as string,
+    email: r.email as string,
+    name: r.name as string,
+    requestedTeamId: r.requested_team_id as string | null,
+    requestedTeamName: r.requested_team_name as string | null,
+    note: r.note as string | null,
+    status: r.status as MemberRequest['status'],
+    rejectionReason: r.rejection_reason as string | null,
+    reviewedByName: r.reviewed_by_name as string | null,
+    reviewedAt: r.reviewed_at as string | null,
+    createdAt: r.created_at as string,
   }
 }
 
@@ -1125,6 +1141,51 @@ export const api = {
 
     async deleteApproverConfig(id: string): Promise<void> {
       await request(`/liveops/admin/approver-config/${id}`, { method: 'DELETE' })
+    },
+  },
+
+  onboarding: {
+    async getMyRequest(): Promise<MemberRequest | null> {
+      const raw = await request<Record<string, unknown> | null>('/onboarding/request/me')
+      if (!raw) return null
+      return mapMemberRequest(raw)
+    },
+
+    async submitRequest(data: { name: string; requestedTeamId: string; note?: string }): Promise<MemberRequest> {
+      const raw = await request<Record<string, unknown>>('/onboarding/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: data.name, requested_team_id: data.requestedTeamId, note: data.note }),
+      })
+      return mapMemberRequest(raw)
+    },
+
+    async listRequests(status = 'pending'): Promise<MemberRequest[]> {
+      const rows = await request<Record<string, unknown>[]>(`/onboarding/requests?status=${status}`)
+      return rows.map(mapMemberRequest)
+    },
+
+    async pendingCount(): Promise<number> {
+      const res = await request<{ count: number }>('/onboarding/requests/pending-count')
+      return res.count
+    },
+
+    async approveRequest(id: string, roleName: string): Promise<MemberRequest> {
+      const raw = await request<Record<string, unknown>>(`/onboarding/requests/${id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_name: roleName }),
+      })
+      return mapMemberRequest(raw)
+    },
+
+    async rejectRequest(id: string, reason?: string): Promise<MemberRequest> {
+      const raw = await request<Record<string, unknown>>(`/onboarding/requests/${id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason ?? null }),
+      })
+      return mapMemberRequest(raw)
     },
   },
 }

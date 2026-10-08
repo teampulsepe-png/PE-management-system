@@ -77,6 +77,52 @@ class TeamMemberOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MemberRequestCreate(BaseModel):
+    name: str
+    requested_team_id: str
+    note: Optional[str] = None
+
+
+class MemberRequestOut(BaseModel):
+    id: str
+    email: str
+    name: str
+    requested_team_id: Optional[str]
+    requested_team_name: Optional[str]
+    note: Optional[str]
+    status: str
+    rejection_reason: Optional[str]
+    reviewed_by_name: Optional[str]
+    reviewed_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_orm_obj(cls, r: object) -> "MemberRequestOut":
+        return cls(
+            id=r.id,
+            email=r.email,
+            name=r.name,
+            requested_team_id=r.requested_team_id,
+            requested_team_name=r.requested_team.name if r.requested_team else None,
+            note=r.note,
+            status=r.status,
+            rejection_reason=r.rejection_reason,
+            reviewed_by_name=r.reviewed_by.name if r.reviewed_by else None,
+            reviewed_at=r.reviewed_at,
+            created_at=r.created_at,
+        )
+
+
+class MemberRequestApprove(BaseModel):
+    role_name: str
+
+
+class MemberRequestReject(BaseModel):
+    reason: Optional[str] = None
+
+
 class NotificationOut(BaseModel):
     id: str
     type: str

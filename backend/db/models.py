@@ -645,6 +645,28 @@ class LiveOpsComment(Base):
     author = relationship("TeamMember", foreign_keys=[author_id])
 
 
+class MemberRequest(Base):
+    __tablename__ = "member_requests"
+
+    id                = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email             = Column(String, nullable=False)
+    name              = Column(String, nullable=False)
+    requested_team_id = Column(String, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    note              = Column(Text, nullable=True)
+    status            = Column(String, nullable=False, default="pending")  # pending | approved | rejected
+    rejection_reason  = Column(Text, nullable=True)
+    reviewed_by_id    = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at       = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at        = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    requested_team = relationship("Team")
+    reviewed_by    = relationship("TeamMember")
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','approved','rejected')", name="member_requests_status_check"),
+    )
+
+
 class LiveOpsTicketEvent(Base):
     """Immutable audit log — one row per state transition or significant action."""
     __tablename__ = "liveops_ticket_events"
