@@ -26,7 +26,9 @@ export default function UserMenu({ user, onClose }: Props) {
   }, [onClose])
 
   function handleSignOut() {
-    window.location.href = '/logout'
+    localStorage.clear()
+    sessionStorage.clear()
+    window.location.href = '/_logout'
   }
 
   const displayName = user.name ?? user.email.split('@')[0]
