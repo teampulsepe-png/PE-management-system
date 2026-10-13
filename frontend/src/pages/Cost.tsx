@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Database, Server, Bot, TrendingUp, TrendingDown, Plus, Trash2, Loader2, ChevronDown, X, RefreshCw } from 'lucide-react'
+import { Database, Server, Bot, TrendingUp, TrendingDown, Plus, Trash2, Loader2, ChevronDown, X, RefreshCw, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api } from '../api/teamPulseApi'
 import type { CostSummary, CostEntry, CostCategory } from '../types'
@@ -189,12 +189,14 @@ function timeAgo(d: Date) {
 }
 
 function LastUpdatedCard({
-  lastFetched, newestEntry, onRefresh, refreshing,
+  lastFetched, newestEntry, onRefresh, refreshing, onDatabricksSync, syncing,
 }: {
   lastFetched: Date | null
   newestEntry: CostEntry | null
   onRefresh: () => void
   refreshing: boolean
+  onDatabricksSync: () => void
+  syncing: boolean
 }) {
   return (
     <div className="rounded-2xl p-6 flex flex-col justify-between" style={{ background: '#13151e' }}>
@@ -230,15 +232,26 @@ function LastUpdatedCard({
         )}
       </div>
 
-      <button
-        onClick={onRefresh}
-        disabled={refreshing}
-        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold text-white mt-5 transition-opacity disabled:opacity-50"
-        style={{ background: '#16a34a' }}
-      >
-        <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-        {refreshing ? 'Syncing…' : 'Sync Now'}
-      </button>
+      <div className="flex flex-col gap-2 mt-5">
+        <button
+          onClick={onDatabricksSync}
+          disabled={syncing || refreshing}
+          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-50"
+          style={{ background: '#1d4ed8' }}
+        >
+          <Zap size={13} className={syncing ? 'animate-pulse' : ''} />
+          {syncing ? 'Running notebook…' : 'Sync Databricks'}
+        </button>
+        <button
+          onClick={onRefresh}
+          disabled={refreshing || syncing}
+          className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-xs font-semibold transition-opacity disabled:opacity-50"
+          style={{ background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.55)' }}
+        >
+          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -369,6 +382,8 @@ export default function Cost() {
   const [data,         setData]         = useState<CostSummary | null>(null)
   const [loading,      setLoading]      = useState(true)
   const [refreshing,   setRefreshing]   = useState(false)
+  const [syncing,      setSyncing]      = useState(false)
+  const [syncError,    setSyncError]    = useState<string | null>(null)
   const [lastFetched,  setLastFetched]  = useState<Date | null>(null)
   const [drawer,       setDrawer]       = useState(false)
   const [deleting,     setDeleting]     = useState<string | null>(null)
@@ -393,6 +408,21 @@ export default function Cost() {
     cur.total           += entry.amountCents
     setData({ ...data, current: cur, entries: [...data.entries, entry] })
     setDrawer(false)
+  }
+
+  async function onDatabricksSync() {
+    setSyncing(true)
+    setSyncError(null)
+    try {
+      const updated = await api.syncFromDatabricks(6)
+      setData(updated)
+      setLastFetched(new Date())
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Databricks sync failed'
+      setSyncError(msg)
+    } finally {
+      setSyncing(false)
+    }
   }
 
   async function onDelete(id: string) {
@@ -448,6 +478,15 @@ export default function Cost() {
   // ── render ───────────────────────────────────────────────────────────────
   return (
     <>
+      {syncError && (
+        <div className="mb-4 flex items-start gap-3 rounded-xl px-4 py-3 text-sm"
+          style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5' }}>
+          <span className="flex-1">{syncError}</span>
+          <button onClick={() => setSyncError(null)} className="opacity-60 hover:opacity-100 transition-opacity flex-shrink-0">
+            <X size={13} />
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 pb-6">
 
         {/* ═══════════════════════════════════════════════════════════════════
@@ -509,6 +548,8 @@ export default function Cost() {
               newestEntry={newestEntry}
               onRefresh={() => load(true)}
               refreshing={refreshing}
+              onDatabricksSync={onDatabricksSync}
+              syncing={syncing}
             />
           </div>
 

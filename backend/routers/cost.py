@@ -12,6 +12,7 @@ from backend.schemas import (
     CostEntryOut, CostEntryCreate, CostEntryUpdate,
     CostSummaryOut, CostMonthTotal, CostHistoryPoint,
 )
+from backend.services.databricks_service import run_cost_notebook, DatabricksError
 
 router = APIRouter(prefix="/api/v1", tags=["cost"])
 
@@ -119,3 +120,63 @@ def delete_cost_entry(entry_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Cost entry not found")
     db.delete(entry)
     db.commit()
+
+
+# ── Databricks sync ───────────────────────────────────────────────────────────
+
+_DATABRICKS_SERVICE_NAMES = ("App Compute", "Lakebase PostgreSQL")
+
+
+@router.post("/cost/sync-databricks", response_model=CostSummaryOut)
+def sync_from_databricks(months: int = 6, db: Session = Depends(get_db)):
+    """
+    Run the cost-calculation notebook in Databricks, which queries
+    system.billing.usage for month-to-date actuals, then upsert the two
+    managed entries for the current month and return an updated summary.
+    """
+    try:
+        result = run_cost_notebook()
+    except DatabricksError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    app_cents: int = result.get("app_compute_cents")
+    lb_cents:  int = result.get("lakebase_cents")
+
+    if app_cents is None or lb_cents is None:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Notebook output missing required keys. "
+                "Expected: app_compute_cents, lakebase_cents"
+            ),
+        )
+
+    current = _now_month()
+
+    # Delete the two managed entries so we can replace them cleanly
+    db.query(CostEntry).filter(
+        CostEntry.month == current,
+        CostEntry.service_name.in_(_DATABRICKS_SERVICE_NAMES),
+    ).delete(synchronize_session=False)
+
+    db.add_all([
+        CostEntry(
+            id=str(uuid.uuid4()),
+            category="compute",
+            service_name="App Compute",
+            service_description="Databricks serverless · month-to-date actual",
+            month=current,
+            amount_cents=int(app_cents),
+        ),
+        CostEntry(
+            id=str(uuid.uuid4()),
+            category="database",
+            service_name="Lakebase PostgreSQL",
+            service_description="Databricks Lakebase · compute + storage · month-to-date actual",
+            month=current,
+            amount_cents=int(lb_cents),
+        ),
+    ])
+    db.commit()
+
+    return get_cost_summary(months=months, db=db)

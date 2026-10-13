@@ -837,6 +837,26 @@ export const api = {
     await request(`/cost/entries/${id}`, { method: 'DELETE' })
   },
 
+  syncFromDatabricks: async (months = 6): Promise<CostSummary> => {
+    interface ApiEntry { id: string; category: string; service_name: string; service_description: string | null; month: string; amount_cents: number; created_at: string; updated_at: string }
+    interface ApiTotal { database: number; compute: number; agent: number; total: number }
+    interface ApiHistory { month: string; database: number; compute: number; agent: number }
+    interface ApiSummary { current_month: string; current: ApiTotal; previous: ApiTotal | null; history: ApiHistory[]; entries: ApiEntry[] }
+    const d = await request<ApiSummary>(`/cost/sync-databricks?months=${months}`, { method: 'POST' })
+    const mapEntry = (e: ApiEntry): CostEntry => ({
+      id: e.id, category: e.category as CostEntry['category'],
+      serviceName: e.service_name, serviceDescription: e.service_description,
+      month: e.month, amountCents: e.amount_cents, createdAt: e.created_at, updatedAt: e.updated_at,
+    })
+    return {
+      currentMonth: d.current_month,
+      current: { database: d.current.database, compute: d.current.compute, agent: d.current.agent, total: d.current.total },
+      previous: d.previous ? { database: d.previous.database, compute: d.previous.compute, agent: d.previous.agent, total: d.previous.total } : null,
+      history: d.history.map(h => ({ month: h.month, database: h.database, compute: h.compute, agent: h.agent })),
+      entries: d.entries.map(mapEntry),
+    }
+  },
+
   // ── LiveOps ───────────────────────────────────────────────────────────────────
 
   liveops: {
