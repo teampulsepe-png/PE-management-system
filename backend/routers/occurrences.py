@@ -155,25 +155,29 @@ def add_comment(
                 mention_emails.append(member.email)
             notif_id = str(uuid.uuid4())
             notif_time = datetime.now(timezone.utc)
+            msg = f"{body.author} mentioned you in a comment on {task.title if task else 'a task'}"
+            nm = {
+                "task_id": occ.task_id,
+                "task_recurrence": task.recurrence if task else None,
+            }
             db.add(Notification(
                 id=notif_id,
                 recipient_member_id=member_id,
                 type="mention",
-                task_id=occ.task_id,
-                task_recurrence=task.recurrence if task else None,
-                occurrence_id=occurrence_id,
-                comment_id=comment.id,
+                entity_type="task_occurrence",
+                entity_id=occurrence_id,
+                notif_meta=nm,
                 triggered_by_name=body.author,
-                message=f"{body.author} mentioned you in a comment on {task.title if task else 'a task'}",
+                message=msg,
             ))
             sse_pushes.append((member_id, json.dumps({
                 "id": notif_id,
                 "type": "mention",
-                "task_id": occ.task_id,
-                "task_recurrence": task.recurrence if task else None,
-                "occurrence_id": occurrence_id,
+                "entity_type": "task_occurrence",
+                "entity_id": occurrence_id,
+                "notif_meta": nm,
                 "triggered_by_name": body.author,
-                "message": f"{body.author} mentioned you in a comment on {task.title if task else 'a task'}",
+                "message": msg,
                 "is_read": False,
                 "created_at": notif_time.isoformat(),
             })))

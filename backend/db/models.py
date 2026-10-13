@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy import (
-    Column, String, Boolean, Text, TIMESTAMP, Integer,
+    Column, String, Boolean, Text, TIMESTAMP, Integer, JSON,
     ForeignKey, UniqueConstraint, CheckConstraint, Enum as SAEnum,
 )
 from sqlalchemy.orm import relationship
@@ -82,10 +82,9 @@ class Notification(Base):
     id                  = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     recipient_member_id = Column(String, ForeignKey("team_members.id", ondelete="CASCADE"), nullable=False)
     type                = Column(String, nullable=False)
-    task_id             = Column(String, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
-    task_recurrence     = Column(String, nullable=True)
-    occurrence_id       = Column(String, ForeignKey("task_occurrences.id", ondelete="SET NULL"), nullable=True)
-    comment_id          = Column(String, ForeignKey("task_comments.id", ondelete="SET NULL"), nullable=True)
+    entity_type         = Column(String, nullable=True)   # "task_occurrence" | "liveops_ticket" | ...
+    entity_id           = Column(String, nullable=True)   # ID of the referenced entity (no FK — generic)
+    notif_meta          = Column("metadata", JSON, nullable=True)   # extra routing context
     triggered_by_name   = Column(String, nullable=True)
     message             = Column(String, nullable=False)
     is_read             = Column(Boolean, nullable=False, default=False)
@@ -597,7 +596,7 @@ class LiveOpsTicket(Base):
     __table_args__ = (
         CheckConstraint("urgency IN ('low','medium','high')", name="liveops_tickets_urgency_check"),
         CheckConstraint(
-            "status IN ('draft','pending_wl','pending_tl','pending_lo','open','in_progress','completed','rejected','cancelled','on_hold')",
+            "status IN ('draft','pending_wl','pending_tl','pending_lo','open','in_progress','completed','rejected','cancelled','on_hold','pending_review')",
             name="liveops_tickets_status_check",
         ),
     )

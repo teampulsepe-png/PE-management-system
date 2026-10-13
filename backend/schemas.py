@@ -126,9 +126,9 @@ class MemberRequestReject(BaseModel):
 class NotificationOut(BaseModel):
     id: str
     type: str
-    task_id: Optional[str]
-    task_recurrence: Optional[str]
-    occurrence_id: Optional[str]
+    entity_type: Optional[str]
+    entity_id: Optional[str]
+    notif_meta: Optional[dict]
     triggered_by_name: Optional[str]
     message: str
     is_read: bool
@@ -1033,8 +1033,8 @@ class LiveOpsTicketDetail(LiveOpsTicketListItem):
 
 class LiveOpsApproveBody(BaseModel):
     reason: Optional[str] = None
-    assignee_id: Optional[str] = None   # required when approving at pending_lo stage
-    lo_message: Optional[str] = None    # message for the assignee
+    assignee_ids: Optional[list[str]] = None   # required when approving at pending_lo stage
+    lo_message: Optional[str] = None           # shared message for all assignees
 
 
 class LiveOpsPushBackBody(BaseModel):
@@ -1046,7 +1046,7 @@ class LiveOpsRejectBody(BaseModel):
 
 
 class LiveOpsAssignBody(BaseModel):
-    assignee_id: str
+    assignee_ids: list[str]
     lo_message: Optional[str] = None
 
 
@@ -1065,6 +1065,10 @@ class LiveOpsCancelBody(BaseModel):
 
 
 class LiveOpsCompleteBody(BaseModel):
+    note: Optional[str] = None
+
+
+class LiveOpsConfirmCompleteBody(BaseModel):
     note: Optional[str] = None
 
 
@@ -1100,3 +1104,38 @@ class LiveOpsAnalyticsSummary(BaseModel):
     sla_breaching: int
     completed_this_month: int
     avg_resolution_hours: Optional[float]
+
+
+# ── My Work ───────────────────────────────────────────────────────────────────
+
+class MyWorkItem(BaseModel):
+    id: str
+    source: str               # liveops | task | supervisor | tracker
+    title: str
+    subtitle: Optional[str]   # "#24 · BU name" / period / "Size M" / "Area › Group"
+    status: str
+    urgency: Optional[str]    # liveops only
+    due_at: Optional[str]     # ISO date "YYYY-MM-DD"
+    sla_deadline: Optional[str]  # liveops only, ISO datetime
+    ticket_number: Optional[int]
+    ticket_id: Optional[str]     # liveops ticket UUID
+    assignment_id: Optional[str] # liveops assignment UUID
+    occurrence_id: Optional[str] # task occurrence UUID
+    supervisor_task_id: Optional[str]
+    size: Optional[str]          # supervisor: S | M | L
+    is_overdue: bool
+
+
+class MyWorkSummary(BaseModel):
+    total: int
+    overdue: int
+    due_today: int
+    in_progress: int
+
+
+class MyWorkResponse(BaseModel):
+    overdue: list[MyWorkItem]
+    due_today: list[MyWorkItem]
+    this_week: list[MyWorkItem]
+    later: list[MyWorkItem]
+    summary: MyWorkSummary

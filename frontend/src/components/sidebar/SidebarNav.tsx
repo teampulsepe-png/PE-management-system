@@ -4,6 +4,7 @@ import { useAppContext } from '../../context/AppContext'
 
 const MAIN_NAV = [
   { label: 'Dashboard',  icon: LayoutDashboard, path: '/',          featureKey: null },
+  { label: 'My Work',    icon: LayoutList,      path: '/my-work',   featureKey: null },
   { label: 'Tasks',      icon: CheckSquare,     path: '/tasks',     featureKey: 'tasks' },
   { label: 'Workload',   icon: GaugeCircle,     path: '/workload',  featureKey: 'workload' },
   { label: 'Pipelines',  icon: LineSquiggle,    path: '/pipelines', featureKey: 'pipelines' },

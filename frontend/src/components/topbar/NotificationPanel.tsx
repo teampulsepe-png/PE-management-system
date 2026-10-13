@@ -61,8 +61,10 @@ export default function NotificationPanel({ onClose }: Props) {
 
   function handleClick(n: AppNotification) {
     onClose()
-    if (n.taskId && n.taskRecurrence) {
-      navigate(`/tasks?recurrence=${n.taskRecurrence}&taskId=${n.taskId}`)
+    if (n.entityType === 'task_occurrence' && n.notifMeta?.task_recurrence && n.notifMeta?.task_id) {
+      navigate(`/tasks?recurrence=${n.notifMeta.task_recurrence}&taskId=${n.notifMeta.task_id}`)
+    } else if (n.entityType === 'liveops_ticket' && n.entityId) {
+      navigate(`/liveops`)
     }
   }
 

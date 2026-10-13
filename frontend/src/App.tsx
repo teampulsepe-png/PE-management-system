@@ -14,6 +14,7 @@ import Settings from './pages/Settings'
 import Agent from './pages/Agent'
 import Cost from './pages/Cost'
 import LiveOps from './pages/LiveOps'
+import MyWork from './pages/MyWork'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
         <Routes>
           <Route element={<AppLayout />}>
             <Route index element={<Dashboard />} />
+            <Route path="/my-work" element={<MyWork />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/liveops" element={<LiveOps />} />

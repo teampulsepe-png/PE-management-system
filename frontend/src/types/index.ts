@@ -100,9 +100,9 @@ export interface Ticket {
 export interface AppNotification {
   id: string
   type: string
-  taskId: string | null
-  taskRecurrence: string | null
-  occurrenceId: string | null
+  entityType: string | null
+  entityId: string | null
+  notifMeta: Record<string, string | null> | null
   triggeredByName: string | null
   message: string
   isRead: boolean
@@ -365,7 +365,7 @@ export interface CostSummary {
 export type LiveOpsUrgency = 'high' | 'medium' | 'low'
 export type LiveOpsTicketStatus =
   | 'draft' | 'pending_wl' | 'pending_tl' | 'pending_lo'
-  | 'open' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'on_hold'
+  | 'open' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'on_hold' | 'pending_review'
 export type LiveOpsApprovalStatus = 'pending' | 'approved' | 'rejected' | 'pushed_back' | 'na'
 export type LiveOpsMemberRoleType = 'workstream_lead' | 'team_lead' | 'lo_manager' | 'platform_engineer' | 'liveops_engineer'
 export type LiveOpsAssignmentStatus = 'pending' | 'active' | 'completed' | 'rejected'
@@ -441,4 +441,41 @@ export interface LiveOpsAssignableMember { id: string; name: string; activeAssig
 export interface LiveOpsAnalyticsSummary {
   totalOpen: number; pendingApproval: number; inProgress: number
   slaBreaching: number; completedThisMonth: number; avgResolutionHours: number | null
+}
+
+// ── My Work ───────────────────────────────────────────────────────────────────
+
+export type MyWorkSource = 'liveops' | 'task' | 'supervisor' | 'tracker'
+
+export interface MyWorkItem {
+  id: string
+  source: MyWorkSource
+  title: string
+  subtitle: string | null
+  status: string
+  urgency: string | null
+  dueAt: string | null
+  slaDeadline: string | null
+  ticketNumber: number | null
+  ticketId: string | null
+  assignmentId: string | null
+  occurrenceId: string | null
+  supervisorTaskId: string | null
+  size: string | null
+  isOverdue: boolean
+}
+
+export interface MyWorkSummary {
+  total: number
+  overdue: number
+  dueToday: number
+  inProgress: number
+}
+
+export interface MyWorkResponse {
+  overdue: MyWorkItem[]
+  dueToday: MyWorkItem[]
+  thisWeek: MyWorkItem[]
+  later: MyWorkItem[]
+  summary: MyWorkSummary
 }

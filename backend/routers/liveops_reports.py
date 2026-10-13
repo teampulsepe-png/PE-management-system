@@ -26,16 +26,17 @@ XL_SLATE_200  = "E2E8F0"
 XL_SLATE_700  = "334155"
 
 STATUS_XL: dict[str, tuple[str, str]] = {
-    "draft":       ("F8FAFC", "64748B"),
-    "pending_pl":  ("FFFBEB", "B45309"),
-    "pending_dl":  ("FFFBEB", "B45309"),
-    "pending_lo":  ("FFF7ED", "C2410C"),
-    "open":        ("EFF6FF", "1D4ED8"),
-    "in_progress": ("EFF6FF", "2563EB"),
-    "completed":   ("F0FDF4", "15803D"),
-    "rejected":    ("FEF2F2", "B91C1C"),
-    "cancelled":   ("F8FAFC", "64748B"),
-    "on_hold":     ("FFFBEB", "B45309"),
+    "draft":          ("F8FAFC", "64748B"),
+    "pending_wl":     ("FFFBEB", "B45309"),
+    "pending_tl":     ("FFFBEB", "B45309"),
+    "pending_lo":     ("FFF7ED", "C2410C"),
+    "open":           ("EFF6FF", "1D4ED8"),
+    "in_progress":    ("EFF6FF", "2563EB"),
+    "pending_review": ("F5F3FF", "6D28D9"),
+    "completed":      ("F0FDF4", "15803D"),
+    "rejected":       ("FEF2F2", "B91C1C"),
+    "cancelled":      ("F8FAFC", "64748B"),
+    "on_hold":        ("FFFBEB", "B45309"),
 }
 
 URGENCY_XL: dict[str, tuple[str, str]] = {
@@ -45,8 +46,9 @@ URGENCY_XL: dict[str, tuple[str, str]] = {
 }
 
 STATUS_LABEL = {
-    "draft": "Draft", "pending_pl": "Pending PL", "pending_dl": "Pending DL",
+    "draft": "Draft", "pending_wl": "Pending WL", "pending_tl": "Pending TL",
     "pending_lo": "Pending LO", "open": "Open", "in_progress": "In Progress",
+    "pending_review": "Pending Review",
     "completed": "Completed", "rejected": "Rejected",
     "cancelled": "Cancelled", "on_hold": "On Hold",
 }
@@ -60,16 +62,17 @@ RL_SLATE_50   = (0.973, 0.980, 0.988)
 RL_SLATE_200  = (0.886, 0.910, 0.941)
 
 STATUS_RL: dict[str, tuple] = {
-    "draft":       ((0.973, 0.980, 0.988), (0.392, 0.455, 0.545)),
-    "pending_pl":  ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
-    "pending_dl":  ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
-    "pending_lo":  ((1.0,   0.969, 0.929), (0.761, 0.255, 0.047)),
-    "open":        ((0.937, 0.965, 1.0),   (0.114, 0.306, 0.871)),
-    "in_progress": ((0.937, 0.965, 1.0),   (0.145, 0.388, 0.922)),
-    "completed":   ((0.941, 0.992, 0.953), (0.086, 0.502, 0.239)),
-    "rejected":    ((1.0,   0.949, 0.949), (0.725, 0.110, 0.110)),
-    "cancelled":   ((0.973, 0.980, 0.988), (0.392, 0.455, 0.545)),
-    "on_hold":     ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
+    "draft":          ((0.973, 0.980, 0.988), (0.392, 0.455, 0.545)),
+    "pending_wl":     ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
+    "pending_tl":     ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
+    "pending_lo":     ((1.0,   0.969, 0.929), (0.761, 0.255, 0.047)),
+    "open":           ((0.937, 0.965, 1.0),   (0.114, 0.306, 0.871)),
+    "in_progress":    ((0.937, 0.965, 1.0),   (0.145, 0.388, 0.922)),
+    "pending_review": ((0.961, 0.953, 1.0),   (0.431, 0.157, 0.875)),
+    "completed":      ((0.941, 0.992, 0.953), (0.086, 0.502, 0.239)),
+    "rejected":       ((1.0,   0.949, 0.949), (0.725, 0.110, 0.110)),
+    "cancelled":      ((0.973, 0.980, 0.988), (0.392, 0.455, 0.545)),
+    "on_hold":        ((1.0,   0.984, 0.918), (0.706, 0.349, 0.035)),
 }
 
 URGENCY_RL: dict[str, tuple] = {
@@ -96,8 +99,8 @@ def _fetch_tickets(db: Session, from_dt: datetime, to_dt: datetime):
             joinedload(LiveOpsTicket.use_case),
             joinedload(LiveOpsTicket.business_unit),
             joinedload(LiveOpsTicket.submitted_by),
-            joinedload(LiveOpsTicket.practice_lead),
-            joinedload(LiveOpsTicket.delivery_lead),
+            joinedload(LiveOpsTicket.workstream_lead),
+            joinedload(LiveOpsTicket.team_lead),
             joinedload(LiveOpsTicket.currently_with),
             joinedload(LiveOpsTicket.assignments).joinedload(LiveOpsAssignment.assignee),
         )
@@ -290,8 +293,8 @@ def _build_excel(tickets: list, stats: dict, from_date: date, to_date: date) -> 
         ("Submitted By",   20),
         ("Submitted",      18),
         ("SLA Deadline",   18),
+        ("Workstream Lead", 20),
         ("Practice Lead",  20),
-        ("Delivery Lead",  20),
         ("Assignee(s)",    22),
         ("Resolved",       18),
         ("Duration",       12),
@@ -337,8 +340,8 @@ def _build_excel(tickets: list, stats: dict, from_date: date, to_date: date) -> 
         put(7, t.submitted_by.name if t.submitted_by else "—")
         put(8, _fmt_date(t.submitted_at))
         put(9, _fmt_date(t.sla_deadline))
-        put(10, t.practice_lead.name if t.practice_lead else "—")
-        put(11, t.delivery_lead.name if t.delivery_lead else "—")
+        put(10, t.workstream_lead.name if t.workstream_lead else "—")
+        put(11, t.team_lead.name if t.team_lead else "—")
         put(12, _assignees(t))
         put(13, _fmt_date(t.completed_at))
         put(14, _duration_hours(t))

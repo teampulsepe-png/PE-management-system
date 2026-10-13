@@ -35,9 +35,9 @@ function parseSSENotification(raw: string): AppNotification | null {
     return {
       id: n.id,
       type: n.type,
-      taskId: n.task_id,
-      taskRecurrence: n.task_recurrence,
-      occurrenceId: n.occurrence_id,
+      entityType: n.entity_type ?? null,
+      entityId: n.entity_id ?? null,
+      notifMeta: n.notif_meta ?? null,
       triggeredByName: n.triggered_by_name,
       message: n.message,
       isRead: n.is_read,

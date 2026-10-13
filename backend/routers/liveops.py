@@ -1,9 +1,12 @@
+import io
 import json
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 
 from backend.db.session import get_db
@@ -23,12 +26,19 @@ from backend.schemas import (
     LiveOpsEventOut, LiveOpsAssignableMember, LiveOpsAnalyticsSummary,
     LiveOpsApproveBody, LiveOpsRejectBody, LiveOpsAssignBody,
     LiveOpsReassignBody, LiveOpsHoldBody, LiveOpsCancelBody,
-    LiveOpsCompleteBody, LiveOpsRejectAssignmentBody, LiveOpsOverrideUrgencyBody,
+    LiveOpsCompleteBody, LiveOpsConfirmCompleteBody, LiveOpsRejectAssignmentBody, LiveOpsOverrideUrgencyBody,
     LiveOpsPushBackBody, LiveOpsTicketPatch,
 )
-from backend import sse
+from backend import sse, push_service
 
 router = APIRouter(prefix="/api/v1/liveops", tags=["liveops"])
+
+_MENTION_RE = re.compile(r'@\[([^\]]+)\]\(([^)]+)\)')
+
+
+def _extract_mentions(body: str) -> list[tuple[str, str]]:
+    """Returns [(display_name, member_id), ...] for every @[Name](id) in the text."""
+    return _MENTION_RE.findall(body)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -124,6 +134,9 @@ def _notify(
     ntype: str,
     msg: str,
     actor_name: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    notif_meta: Optional[dict] = None,
 ) -> Optional[tuple[str, str]]:
     """Persist a notification and return (member_id, sse_payload) for push after commit."""
     if not recipient_id:
@@ -133,13 +146,16 @@ def _notify(
         id=notif_id,
         recipient_member_id=recipient_id,
         type=ntype,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        notif_meta=notif_meta,
         triggered_by_name=actor_name,
         message=msg,
         is_read=False,
     ))
     payload = json.dumps({
         "id": notif_id, "type": ntype,
-        "task_id": None, "task_recurrence": None, "occurrence_id": None,
+        "entity_type": entity_type, "entity_id": entity_id, "notif_meta": notif_meta,
         "triggered_by_name": actor_name,
         "message": msg, "is_read": False,
         "created_at": _now().isoformat(),
@@ -235,7 +251,7 @@ def list_member_roles(db: Session = Depends(get_db)):
 
 @router.post("/admin/member-roles", response_model=LiveOpsMemberRoleOut, status_code=201)
 def create_member_role(body: LiveOpsMemberRoleCreate, db: Session = Depends(get_db)):
-    valid_roles = {"workstream_lead", "team_lead", "lo_manager", "platform_engineer"}
+    valid_roles = {"workstream_lead", "team_lead", "lo_manager", "platform_engineer", "liveops_engineer"}
     if body.role not in valid_roles:
         raise HTTPException(status_code=422, detail=f"role must be one of {sorted(valid_roles)}")
     existing = db.query(LiveOpsMemberRole).filter_by(member_id=body.member_id, role=body.role).first()
@@ -480,7 +496,7 @@ def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[t
         _system_comment(db, ticket.id, f"Ticket submitted by {member.name}.")
         n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
                     f"LO-{ticket.ticket_number:04d} needs your approval — submitted by {member.name}",
-                    member.name)
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
         if n: pushes.append(n)
     else:
         # No WL assigned — skip approval chain and go straight to LO Manager
@@ -494,7 +510,7 @@ def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[t
             f"Ticket submitted by {member.name}. No approver configured — forwarded directly to LO Manager.")
         n = _notify(db, lo_id, "liveops_ticket",
                     f"LO-{ticket.ticket_number:04d} submitted by {member.name} — no WL configured, needs your decision",
-                    member.name)
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
         if n: pushes.append(n)
 
     return pushes
@@ -558,7 +574,8 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
             _event(db, ticket.id, member.id, "wl_approved", {"reason": body.reason, "next": "pending_lo"})
             _system_comment(db, ticket.id, f"Approved by Workstream Lead {member.name}. Forwarded to LO Manager.")
             n = _notify(db, lo_id, "liveops_ticket",
-                        f"LO-{ticket.ticket_number:04d} approved by WL and awaiting your review", member.name)
+                        f"LO-{ticket.ticket_number:04d} approved by WL and awaiting your review", member.name,
+                        entity_type="liveops_ticket", entity_id=ticket_id)
             if n: pushes.append(n)
         else:
             ticket.status = "pending_tl"
@@ -566,7 +583,8 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
             _event(db, ticket.id, member.id, "wl_approved", {"reason": body.reason, "next": "pending_tl"})
             _system_comment(db, ticket.id, f"Approved by Workstream Lead {member.name}. Forwarded to Team Lead.")
             n = _notify(db, ticket.team_lead_id, "liveops_ticket",
-                        f"LO-{ticket.ticket_number:04d} needs your approval — WL approved", member.name)
+                        f"LO-{ticket.ticket_number:04d} needs your approval — WL approved", member.name,
+                        entity_type="liveops_ticket", entity_id=ticket_id)
             if n: pushes.append(n)
 
     elif ticket.status == "pending_tl":
@@ -582,54 +600,61 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
         _event(db, ticket.id, member.id, "tl_approved", {"reason": body.reason})
         _system_comment(db, ticket.id, f"Approved by Team Lead {member.name}. Forwarded to LO Manager.")
         n = _notify(db, lo_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} fully approved and awaiting your decision", member.name)
+                    f"LO-{ticket.ticket_number:04d} fully approved and awaiting your decision", member.name,
+                    entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
 
     elif ticket.status == "pending_lo":
         if not is_lo_or_admin:
             raise HTTPException(status_code=403, detail="Only LO Manager can approve at this stage")
-        if not body.assignee_id:
-            raise HTTPException(status_code=422, detail="assignee_id is required when approving at LO stage")
+        if not body.assignee_ids:
+            raise HTTPException(status_code=422, detail="assignee_ids is required when approving at LO stage")
 
-        assignee = db.query(TeamMember).filter_by(id=body.assignee_id).first()
-        if not assignee:
-            raise HTTPException(status_code=404, detail="Assignee not found")
-
-        role_ok = db.query(LiveOpsMemberRole).filter(
-            LiveOpsMemberRole.member_id == body.assignee_id,
-            LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
-        ).first()
-        if not role_ok:
-            raise HTTPException(status_code=422, detail="Assignee must be a Platform Engineer or LiveOps Engineer")
+        assignees = []
+        for aid in body.assignee_ids:
+            assignee = db.query(TeamMember).filter_by(id=aid).first()
+            if not assignee:
+                raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
+            role_ok = db.query(LiveOpsMemberRole).filter(
+                LiveOpsMemberRole.member_id == aid,
+                LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
+            ).first()
+            if not role_ok:
+                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a Platform Engineer or LiveOps Engineer")
+            assignees.append(assignee)
 
         ticket.lo_status   = "approved"
         ticket.lo_actor_id = member.id
         ticket.lo_acted_at = now
         ticket.lo_reason   = body.reason
         ticket.status      = "open"
-        ticket.currently_with_id = body.assignee_id
+        ticket.currently_with_id = body.assignee_ids[0]
 
-        assignment = LiveOpsAssignment(
-            id=str(uuid.uuid4()),
-            ticket_id=ticket_id,
-            assignee_id=body.assignee_id,
-            assigned_by_id=member.id,
-            lo_message=body.lo_message,
-            status="pending",
-        )
-        db.add(assignment)
+        assignee_names = []
+        for assignee in assignees:
+            db.add(LiveOpsAssignment(
+                id=str(uuid.uuid4()),
+                ticket_id=ticket_id,
+                assignee_id=assignee.id,
+                assigned_by_id=member.id,
+                lo_message=body.lo_message,
+                status="pending",
+            ))
+            assignee_names.append(assignee.name)
+            msg = f"LO-{ticket.ticket_number:04d} has been assigned to you"
+            if body.lo_message:
+                msg += f" — {body.lo_message}"
+            n = _notify(db, assignee.id, "liveops_ticket", msg, member.name,
+                        entity_type="liveops_ticket", entity_id=ticket_id)
+            if n: pushes.append(n)
 
+        names_str = ", ".join(assignee_names)
         _event(db, ticket.id, member.id, "lo_approved_and_assigned", {
             "reason": body.reason,
-            "assignee_id": body.assignee_id,
-            "assignee_name": assignee.name,
+            "assignee_ids": body.assignee_ids,
+            "assignee_names": assignee_names,
         })
-        _system_comment(db, ticket.id, f"Approved by LO Manager {member.name}. Assigned to {assignee.name}.")
-        msg = f"LO-{ticket.ticket_number:04d} has been assigned to you"
-        if body.lo_message:
-            msg += f" — {body.lo_message}"
-        n = _notify(db, body.assignee_id, "liveops_ticket", msg, member.name)
-        if n: pushes.append(n)
+        _system_comment(db, ticket.id, f"Approved by LO Manager {member.name}. Assigned to {names_str}.")
 
     else:
         raise HTTPException(status_code=409, detail=f"Ticket cannot be approved in status '{ticket.status}'")
@@ -669,7 +694,8 @@ def push_back_ticket(ticket_id: str, body: LiveOpsPushBackBody, member_email: st
         _system_comment(db, ticket.id,
             f"Pushed back to submitter by Workstream Lead {member.name}. Reason: {body.reason}")
         n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} was pushed back: {body.reason}", member.name)
+                    f"LO-{ticket.ticket_number:04d} was pushed back: {body.reason}", member.name,
+                    entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
 
     elif ticket.status == "pending_tl":
@@ -689,7 +715,8 @@ def push_back_ticket(ticket_id: str, body: LiveOpsPushBackBody, member_email: st
         _system_comment(db, ticket.id,
             f"Pushed back to Workstream Lead by Team Lead {member.name}. Reason: {body.reason}")
         n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} pushed back by Team Lead: {body.reason}", member.name)
+                    f"LO-{ticket.ticket_number:04d} pushed back by Team Lead: {body.reason}", member.name,
+                    entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
 
     else:
@@ -756,7 +783,8 @@ def reject_ticket(ticket_id: str, body: LiveOpsRejectBody, member_email: str, db
     ticket.currently_with_id = None
     ticket.updated_at = now
     n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
-                f"LO-{ticket.ticket_number:04d} was rejected: {body.reason}", member.name)
+                f"LO-{ticket.ticket_number:04d} was rejected: {body.reason}", member.name,
+                entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
     db.commit()
     _push_all(pushes)
@@ -813,7 +841,7 @@ def hold_ticket(ticket_id: str, body: LiveOpsHoldBody, member_email: str, db: Se
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if ticket.status not in ("open", "in_progress", "pending_lo"):
+    if ticket.status not in ("open", "in_progress", "pending_lo", "pending_review"):
         raise HTTPException(status_code=409, detail=f"Cannot put ticket on hold from status '{ticket.status}'")
 
     now = _now()
@@ -877,48 +905,57 @@ def assign_ticket(ticket_id: str, body: LiveOpsAssignBody, member_email: str, db
     if ticket.status not in ("open", "in_progress"):
         raise HTTPException(status_code=409, detail=f"Cannot assign ticket in status '{ticket.status}'")
 
-    assignee = db.query(TeamMember).filter_by(id=body.assignee_id).first()
-    if not assignee:
-        raise HTTPException(status_code=404, detail="Assignee not found")
+    if not body.assignee_ids:
+        raise HTTPException(status_code=422, detail="assignee_ids must not be empty")
 
-    role_ok = db.query(LiveOpsMemberRole).filter(
-        LiveOpsMemberRole.member_id == body.assignee_id,
-        LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
-    ).first()
-    if not role_ok:
-        raise HTTPException(status_code=422, detail="Assignee must be a Platform Engineer or LiveOps Engineer")
-
-    existing = db.query(LiveOpsAssignment).filter_by(
-        ticket_id=ticket_id,
-    ).filter(LiveOpsAssignment.status.in_(["pending", "active"])).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Ticket already has an active assignment")
+    assignees = []
+    for aid in body.assignee_ids:
+        assignee = db.query(TeamMember).filter_by(id=aid).first()
+        if not assignee:
+            raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
+        role_ok = db.query(LiveOpsMemberRole).filter(
+            LiveOpsMemberRole.member_id == aid,
+            LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
+        ).first()
+        if not role_ok:
+            raise HTTPException(status_code=422, detail=f"{assignee.name} must be a Platform Engineer or LiveOps Engineer")
+        already = db.query(LiveOpsAssignment).filter_by(ticket_id=ticket_id, assignee_id=aid).filter(
+            LiveOpsAssignment.status.in_(["pending", "active"])
+        ).first()
+        if already:
+            raise HTTPException(status_code=409, detail=f"{assignee.name} is already actively assigned to this ticket")
+        assignees.append(assignee)
 
     now = _now()
-    assignment = LiveOpsAssignment(
-        id=str(uuid.uuid4()),
-        ticket_id=ticket_id,
-        assignee_id=body.assignee_id,
-        assigned_by_id=member.id,
-        lo_message=body.lo_message,
-        status="pending",
-    )
-    db.add(assignment)
+    assignee_names = []
+    for assignee in assignees:
+        db.add(LiveOpsAssignment(
+            id=str(uuid.uuid4()),
+            ticket_id=ticket_id,
+            assignee_id=assignee.id,
+            assigned_by_id=member.id,
+            lo_message=body.lo_message,
+            status="pending",
+        ))
+        assignee_names.append(assignee.name)
 
     ticket.status = "in_progress"
-    ticket.currently_with_id = body.assignee_id
+    ticket.currently_with_id = body.assignee_ids[0]
     ticket.updated_at = now
 
+    names_str = ", ".join(assignee_names)
     _event(db, ticket.id, member.id, "assigned", {
-        "assignee_id": body.assignee_id, "assignee_name": assignee.name, "lo_message": body.lo_message,
+        "assignee_ids": body.assignee_ids, "assignee_names": assignee_names, "lo_message": body.lo_message,
     })
-    _system_comment(db, ticket.id, f"Assigned to {assignee.name} by {member.name}.")
-    msg = f"LO-{ticket.ticket_number:04d} has been assigned to you"
-    if body.lo_message:
-        msg += f" — {body.lo_message}"
+    _system_comment(db, ticket.id, f"Assigned to {names_str} by {member.name}.")
     pushes = []
-    n = _notify(db, body.assignee_id, "liveops_ticket", msg, member.name)
-    if n: pushes.append(n)
+    for assignee in assignees:
+        msg = f"LO-{ticket.ticket_number:04d} has been assigned to you"
+        if body.lo_message:
+            msg += f" — {body.lo_message}"
+        n = _notify(db, assignee.id, "liveops_ticket", msg, member.name,
+                    entity_type="liveops_ticket", entity_id=ticket_id)
+        if n: pushes.append(n)
     db.commit()
     _push_all(pushes)
     return _load_ticket(db, ticket.id)
@@ -1007,7 +1044,8 @@ def pickup_ticket(ticket_id: str, member_email: str, db: Session = Depends(get_d
     lo_id = _lo_manager_id(db)
     pushes = []
     n = _notify(db, lo_id, "liveops_ticket",
-                f"LO-{ticket.ticket_number:04d} picked up by {member.name}", member.name)
+                f"LO-{ticket.ticket_number:04d} picked up by {member.name}", member.name,
+                entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
     db.commit()
     _push_all(pushes)
@@ -1042,23 +1080,57 @@ def complete_ticket(ticket_id: str, body: LiveOpsCompleteBody, member_email: str
     ).count()
 
     if other_open == 0:
-        ticket.status = "completed"
-        ticket.completed_at = now
+        ticket.status = "pending_review"
         ticket.currently_with_id = None
     ticket.updated_at = now
 
     note_text = f" Note: {body.note}" if body.note else ""
-    _event(db, ticket_id, member.id, "completed", {"note": body.note})
-    _system_comment(db, ticket_id, f"Completed by {member.name}.{note_text}")
+    _event(db, ticket_id, member.id, "work_completed", {"note": body.note})
+    _system_comment(db, ticket_id, f"Work completed by {member.name}.{note_text} Pending LO review.")
     lo_id = _lo_manager_id(db)
     pushes = []
     n = _notify(db, lo_id, "liveops_ticket",
-                f"LO-{ticket.ticket_number:04d} completed by {member.name}", member.name)
+                f"LO-{ticket.ticket_number:04d} ready for review — work done by {member.name}", member.name,
+                entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
-    if other_open == 0:
-        n2 = _notify(db, ticket.submitted_by_id, "liveops_ticket",
-                     f"LO-{ticket.ticket_number:04d} has been completed", member.name)
-        if n2: pushes.append(n2)
+    db.commit()
+    _push_all(pushes)
+    return _load_ticket(db, ticket_id)
+
+
+# ── tickets — confirm complete (LO Manager) ───────────────────────────────────
+
+@router.post("/tickets/{ticket_id}/confirm-complete", response_model=LiveOpsTicketDetail)
+def confirm_complete(ticket_id: str, body: LiveOpsConfirmCompleteBody, member_email: str, db: Session = Depends(get_db)):
+    member = db.query(TeamMember).filter_by(email=member_email).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    roles = _get_member_roles(db, member.id)
+    if "lo_manager" not in roles and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO Manager can confirm completion")
+
+    ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.status != "pending_review":
+        raise HTTPException(status_code=409, detail="Ticket is not pending review")
+
+    now = _now()
+    ticket.status = "completed"
+    ticket.completed_at = now
+    ticket.currently_with_id = None
+    ticket.updated_at = now
+
+    note_text = f" Note: {body.note}" if body.note else ""
+    _event(db, ticket_id, member.id, "confirmed_complete", {"note": body.note})
+    _system_comment(db, ticket_id, f"Completion confirmed by {member.name}.{note_text}")
+
+    pushes = []
+    n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
+                f"LO-{ticket.ticket_number:04d} has been completed and confirmed", member.name,
+                entity_type="liveops_ticket", entity_id=ticket_id)
+    if n: pushes.append(n)
     db.commit()
     _push_all(pushes)
     return _load_ticket(db, ticket_id)
@@ -1101,7 +1173,8 @@ def reject_assignment(ticket_id: str, body: LiveOpsRejectAssignmentBody, member_
     lo_id = _lo_manager_id(db)
     pushes = []
     n = _notify(db, lo_id, "liveops_ticket",
-                f"LO-{ticket.ticket_number:04d} assignment declined by {member.name}: {body.reason}", member.name)
+                f"LO-{ticket.ticket_number:04d} assignment declined by {member.name}: {body.reason}", member.name,
+                entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
     db.commit()
     _push_all(pushes)
@@ -1158,7 +1231,13 @@ def list_comments(ticket_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tickets/{ticket_id}/comments", response_model=LiveOpsCommentOut, status_code=201)
-def add_comment(ticket_id: str, body: LiveOpsCommentCreate, member_email: str, db: Session = Depends(get_db)):
+def add_comment(
+    ticket_id: str,
+    body: LiveOpsCommentCreate,
+    member_email: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     member = db.query(TeamMember).filter_by(email=member_email).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -1176,13 +1255,175 @@ def add_comment(ticket_id: str, body: LiveOpsCommentCreate, member_email: str, d
     )
     db.add(comment)
     _event(db, ticket_id, member.id, "comment_added", {})
+
+    # Parse @mentions → notify mentioned members
+    sse_pushes: list[tuple[str, str]] = []
+    mention_emails: list[str] = []
+    for display_name, mentioned_id in _extract_mentions(body.body):
+        if mentioned_id == member.id:
+            continue
+        mentioned = db.query(TeamMember).filter_by(id=mentioned_id).first()
+        if not mentioned:
+            continue
+        if mentioned.email:
+            mention_emails.append(mentioned.email)
+        msg = f"{member.name} mentioned you in a comment on LO-{ticket.ticket_number:04d}"
+        n = _notify(db, mentioned.id, "mention", msg, member.name,
+                    entity_type="liveops_ticket", entity_id=ticket_id)
+        if n:
+            sse_pushes.append(n)
+
     db.commit()
+
+    for mid, payload in sse_pushes:
+        sse.push(mid, payload)
+
+    if mention_emails:
+        background_tasks.add_task(
+            push_service.send_to_emails_sync,
+            mention_emails,
+            f"💬 LO-{ticket.ticket_number:04d}",
+            f"{member.name} mentioned you in a comment",
+            "/liveops",
+        )
+
     return (
         db.query(LiveOpsComment)
         .options(joinedload(LiveOpsComment.author))
         .filter(LiveOpsComment.id == comment.id)
         .first()
     )
+
+
+# ── reports export ────────────────────────────────────────────────────────────
+
+@router.get("/reports/export")
+def export_report(
+    from_date: str = Query(..., description="YYYY-MM-DD"),
+    to_date: str   = Query(..., description="YYYY-MM-DD"),
+    format: str    = Query("excel", description="excel or pdf"),
+    db: Session    = Depends(get_db),
+):
+    try:
+        from_dt = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        to_dt   = datetime.strptime(to_date,   "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date format — use YYYY-MM-DD")
+
+    tickets = (
+        db.query(LiveOpsTicket)
+        .options(
+            joinedload(LiveOpsTicket.ticket_type),
+            joinedload(LiveOpsTicket.business_unit),
+            joinedload(LiveOpsTicket.use_case),
+            joinedload(LiveOpsTicket.submitted_by),
+            joinedload(LiveOpsTicket.workstream_lead),
+            joinedload(LiveOpsTicket.team_lead),
+            joinedload(LiveOpsTicket.currently_with),
+        )
+        .filter(LiveOpsTicket.submitted_at >= from_dt, LiveOpsTicket.submitted_at <= to_dt)
+        .order_by(LiveOpsTicket.submitted_at)
+        .all()
+    )
+
+    headers_row = [
+        "Ticket #", "Status", "Urgency", "Type", "Business Unit", "Use Case",
+        "Submitted By", "Submitted At", "Workstream Lead", "Practice Lead",
+        "Assigned To", "SLA Deadline", "Completed At",
+    ]
+
+    def _row(t: LiveOpsTicket) -> list:
+        return [
+            t.ticket_number,
+            t.status.replace("_", " ").title(),
+            t.urgency.title(),
+            t.ticket_type.name  if t.ticket_type  else "",
+            t.business_unit.name if t.business_unit else "",
+            t.use_case.name     if t.use_case     else "",
+            t.submitted_by.name if t.submitted_by else "",
+            t.submitted_at.strftime("%Y-%m-%d %H:%M") if t.submitted_at else "",
+            t.workstream_lead.name if t.workstream_lead else "",
+            t.team_lead.name       if t.team_lead       else "",
+            t.currently_with.name  if t.currently_with  else "",
+            t.sla_deadline.strftime("%Y-%m-%d %H:%M") if t.sla_deadline else "",
+            t.completed_at.strftime("%Y-%m-%d %H:%M") if t.completed_at else "",
+        ]
+
+    if format == "excel":
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "LiveOps Tickets"
+
+        header_fill = PatternFill("solid", fgColor="1E40AF")
+        header_font = Font(color="FFFFFF", bold=True, size=10)
+
+        ws.append(headers_row)
+        for cell in ws[1]:
+            cell.font      = header_font
+            cell.fill      = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        for t in tickets:
+            ws.append(_row(t))
+
+        col_widths = [10, 16, 10, 24, 14, 24, 18, 18, 18, 18, 18, 18, 18]
+        for i, width in enumerate(col_widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"liveops_{from_date}_to_{to_date}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    elif format == "pdf":
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import cm
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1*cm, rightMargin=1*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+        styles = getSampleStyleSheet()
+
+        title = Paragraph(f"LiveOps Report — {from_date} to {to_date}", styles["Title"])
+        subtitle = Paragraph(f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC · {len(tickets)} tickets", styles["Normal"])
+
+        pdf_headers = ["#", "Status", "Urgency", "Type", "BU", "Use Case", "Submitted By", "Submitted At", "WL", "PL", "Assignee", "SLA", "Completed"]
+        data = [pdf_headers] + [_row(t) for t in tickets]
+
+        col_widths_pdf = [1.2*cm, 2.2*cm, 1.8*cm, 3.5*cm, 1.8*cm, 3*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm]
+        table = Table(data, colWidths=col_widths_pdf, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
+            ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE",   (0, 0), (-1, 0), 7),
+            ("FONTSIZE",   (0, 1), (-1, -1), 6.5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#F8FAFC"), colors.white]),
+            ("GRID",       (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+
+        doc.build([title, Spacer(1, 0.3*cm), subtitle, Spacer(1, 0.5*cm), table])
+        buf.seek(0)
+        filename = f"liveops_{from_date}_to_{to_date}.pdf"
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    raise HTTPException(status_code=422, detail="format must be 'excel' or 'pdf'")
 
 
 # ── analytics ─────────────────────────────────────────────────────────────────

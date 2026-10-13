@@ -1,4 +1,4 @@
-import type { Task, TaskOccurrence, TaskComment, TeamMember, CurrentUser, ActivityItem, AppNotification, RecurrenceType, OccurrenceStatus, KpiEntry, KpiEvaluation, KpiEvaluationEntry, KpiPdca, Department, AiTool, AiSubscription, AiSubscriptionAddon, Project, ProjectItem, UserAccessLog, TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask, SupervisorTask, SupervisorTaskSize, SupervisorTaskStatus, Role, MemberDetail, TeamWithMembers, TeamPermissions, CostEntry, CostSummary, LiveOpsBusinessUnit, LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig, LiveOpsMemberRoleRecord, LiveOpsSlaConfig, LiveOpsAssignment, LiveOpsComment, LiveOpsEvent, LiveOpsTicketListItem, LiveOpsTicketDetail, LiveOpsAssignableMember, LiveOpsAnalyticsSummary, MemberRequest } from '../types'
+import type { Task, TaskOccurrence, TaskComment, TeamMember, CurrentUser, ActivityItem, AppNotification, RecurrenceType, OccurrenceStatus, KpiEntry, KpiEvaluation, KpiEvaluationEntry, KpiPdca, Department, AiTool, AiSubscription, AiSubscriptionAddon, Project, ProjectItem, UserAccessLog, TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask, SupervisorTask, SupervisorTaskSize, SupervisorTaskStatus, Role, MemberDetail, TeamWithMembers, TeamPermissions, CostEntry, CostSummary, LiveOpsBusinessUnit, LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig, LiveOpsMemberRoleRecord, LiveOpsSlaConfig, LiveOpsAssignment, LiveOpsComment, LiveOpsEvent, LiveOpsTicketListItem, LiveOpsTicketDetail, LiveOpsAssignableMember, LiveOpsAnalyticsSummary, MemberRequest, MyWorkResponse } from '../types'
 
 const BASE = '/api/v1'
 
@@ -287,14 +287,17 @@ export const api = {
 
   getNotifications: async (): Promise<AppNotification[]> => {
     interface ApiNotif {
-      id: string; type: string; task_id: string | null; task_recurrence: string | null
-      occurrence_id: string | null; triggered_by_name: string | null
+      id: string; type: string
+      entity_type: string | null; entity_id: string | null
+      notif_meta: Record<string, string | null> | null
+      triggered_by_name: string | null
       message: string; is_read: boolean; created_at: string
     }
     const data = await request<ApiNotif[]>('/notifications')
     return data.map(n => ({
-      id: n.id, type: n.type, taskId: n.task_id, taskRecurrence: n.task_recurrence,
-      occurrenceId: n.occurrence_id, triggeredByName: n.triggered_by_name,
+      id: n.id, type: n.type,
+      entityType: n.entity_type, entityId: n.entity_id, notifMeta: n.notif_meta,
+      triggeredByName: n.triggered_by_name,
       message: n.message, isRead: n.is_read, createdAt: n.created_at,
     }))
   },
@@ -976,10 +979,10 @@ export const api = {
 
     // ── state transitions ─────────────────────────────────────────────────────
 
-    async approve(id: string, reason: string | null, memberEmail: string, assigneeId?: string | null, loMessage?: string | null): Promise<LiveOpsTicketDetail> {
+    async approve(id: string, reason: string | null, memberEmail: string, assigneeIds?: string[] | null, loMessage?: string | null): Promise<LiveOpsTicketDetail> {
       const d = await request<Record<string, unknown>>(`/liveops/tickets/${id}/approve?member_email=${encodeURIComponent(memberEmail)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason, assignee_id: assigneeId ?? null, lo_message: loMessage ?? null }),
+        body: JSON.stringify({ reason, assignee_ids: assigneeIds ?? null, lo_message: loMessage ?? null }),
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (api.liveops as any)._mapDetail(d)
@@ -1023,9 +1026,9 @@ export const api = {
       return (api.liveops as any)._mapDetail(d)
     },
 
-    async assign(id: string, assigneeId: string, loMessage: string | null, memberEmail: string): Promise<LiveOpsTicketDetail> {
+    async assign(id: string, assigneeIds: string[], loMessage: string | null, memberEmail: string): Promise<LiveOpsTicketDetail> {
       const d = await request<Record<string, unknown>>(`/liveops/tickets/${id}/assign?member_email=${encodeURIComponent(memberEmail)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignee_id: assigneeId, lo_message: loMessage }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignee_ids: assigneeIds, lo_message: loMessage }),
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (api.liveops as any)._mapDetail(d)
@@ -1047,6 +1050,14 @@ export const api = {
 
     async complete(id: string, note: string | null, memberEmail: string): Promise<LiveOpsTicketDetail> {
       const d = await request<Record<string, unknown>>(`/liveops/tickets/${id}/complete?member_email=${encodeURIComponent(memberEmail)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (api.liveops as any)._mapDetail(d)
+    },
+
+    async confirmComplete(id: string, note: string | null, memberEmail: string): Promise<LiveOpsTicketDetail> {
+      const d = await request<Record<string, unknown>>(`/liveops/tickets/${id}/confirm-complete?member_email=${encodeURIComponent(memberEmail)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1142,6 +1153,40 @@ export const api = {
     async deleteApproverConfig(id: string): Promise<void> {
       await request(`/liveops/admin/approver-config/${id}`, { method: 'DELETE' })
     },
+  },
+
+  // ── My Work ───────────────────────────────────────────────────────────────────
+
+  getMyWork: async (): Promise<MyWorkResponse> => {
+    interface ApiMyWorkItem {
+      id: string; source: string; title: string; subtitle: string | null; status: string
+      urgency: string | null; due_at: string | null; sla_deadline: string | null
+      ticket_number: number | null; ticket_id: string | null; assignment_id: string | null
+      occurrence_id: string | null; supervisor_task_id: string | null; size: string | null
+      is_overdue: boolean
+    }
+    interface ApiSummary { total: number; overdue: number; due_today: number; in_progress: number }
+    interface ApiResponse {
+      overdue: ApiMyWorkItem[]; due_today: ApiMyWorkItem[]
+      this_week: ApiMyWorkItem[]; later: ApiMyWorkItem[]
+      summary: ApiSummary
+    }
+    const map = (i: ApiMyWorkItem) => ({
+      id: i.id, source: i.source as MyWorkResponse['overdue'][0]['source'],
+      title: i.title, subtitle: i.subtitle, status: i.status,
+      urgency: i.urgency, dueAt: i.due_at, slaDeadline: i.sla_deadline,
+      ticketNumber: i.ticket_number, ticketId: i.ticket_id,
+      assignmentId: i.assignment_id, occurrenceId: i.occurrence_id,
+      supervisorTaskId: i.supervisor_task_id, size: i.size, isOverdue: i.is_overdue,
+    })
+    const d = await request<ApiResponse>('/mywork')
+    return {
+      overdue: d.overdue.map(map),
+      dueToday: d.due_today.map(map),
+      thisWeek: d.this_week.map(map),
+      later: d.later.map(map),
+      summary: { total: d.summary.total, overdue: d.summary.overdue, dueToday: d.summary.due_today, inProgress: d.summary.in_progress },
+    }
   },
 
   onboarding: {
