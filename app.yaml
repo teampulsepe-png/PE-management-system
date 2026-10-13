@@ -1,4 +1,4 @@
-command: ["sh", "-c", "python -m backend.manage seed && exec uvicorn backend.main:app && python -m backend.seed_liveops_pts"]
+command: ["sh", "-c", "python -m backend.manage seed && python -m backend.seed_liveops_pts && exec uvicorn backend.main:app"]
 env:
   - name: DB_AUTH_MODE
     value: oauth
