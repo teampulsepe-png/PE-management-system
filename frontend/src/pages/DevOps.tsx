@@ -78,6 +78,7 @@ interface AssigneeCount {
 interface SprintSummary {
   total: number
   by_type: Record<string, number>
+  by_use_case: Record<string, number>
   by_assignee: AssigneeCount[]
   unassigned: number
   message: string
@@ -462,6 +463,226 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   )
 }
 
+// ── sprint summary modal ──────────────────────────────────────────────────────
+
+function SprintSummaryModal({ onClose }: { onClose: () => void }) {
+  const [summary, setSummary] = useState<SprintSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<SendResult | null>(null)
+
+  useEffect(() => {
+    fetch('/api/v1/devops/sprint-summary')
+      .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(d.detail ?? 'Failed to load')))
+      .then(setSummary)
+      .catch(e => setError(typeof e === 'string' ? e : 'Failed to load summary.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function handleSend() {
+    setSending(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/v1/devops/send-sprint-summary', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail ?? 'Send failed')
+      setResult(data)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Send failed.')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const sent = result !== null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-surface-1 border border-hairline rounded-2xl shadow-2xl w-full max-w-md flex flex-col">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-hairline flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-green-500/15 flex items-center justify-center">
+              <Send size={13} className="text-green-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-ink">Send Sprint Summary</h2>
+              <p className="text-[10px] text-ink-tertiary">Current Sprint · WhatsApp</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-2 text-ink-subtle transition-colors">
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-6 py-5 overflow-y-auto max-h-[70vh]">
+          {loading ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                {[1,2,3].map(i => <div key={i} className="h-16 bg-surface-2 rounded-xl animate-pulse" />)}
+              </div>
+              <div className="h-4 bg-surface-3 rounded animate-pulse w-1/3 mt-4" />
+              <div className="h-36 bg-surface-2 rounded-xl animate-pulse" />
+            </div>
+          ) : error && !summary ? (
+            <div className="flex items-center gap-2 text-red-400 text-xs py-2">
+              <AlertCircle size={14} className="flex-shrink-0" />
+              {error}
+            </div>
+          ) : sent ? (
+            <div className="text-center py-8">
+              <div className="w-12 h-12 rounded-full bg-green-500/15 flex items-center justify-center mx-auto mb-3">
+                <Check size={22} className="text-green-400" />
+              </div>
+              <p className="text-sm font-semibold text-ink mb-1">Summary Sent</p>
+              {result!.sent_to.length > 0 && (
+                <p className="text-xs text-ink-tertiary">Delivered to {result!.sent_to.join(', ')}</p>
+              )}
+              {result!.failed.length > 0 && (
+                <p className="text-xs text-red-400 mt-1">Failed: {result!.failed.join(', ')}</p>
+              )}
+            </div>
+          ) : summary ? (
+            <>
+              {/* Stats row */}
+              <div className="grid grid-cols-3 gap-3 mb-5">
+                <div className="bg-surface-2 rounded-xl p-3 text-center border border-hairline">
+                  <p className="text-2xl font-bold text-ink tabular-nums">{summary.total}</p>
+                  <p className="text-[10px] text-ink-tertiary mt-0.5">Total</p>
+                </div>
+                <div className="bg-surface-2 rounded-xl p-3 text-center border border-hairline">
+                  <p className="text-2xl font-bold text-ink tabular-nums">{summary.by_assignee.length}</p>
+                  <p className="text-[10px] text-ink-tertiary mt-0.5">Assignees</p>
+                </div>
+                <div className="bg-surface-2 rounded-xl p-3 text-center border border-hairline">
+                  <p className="text-2xl font-bold text-amber-400 tabular-nums">{summary.unassigned}</p>
+                  <p className="text-[10px] text-ink-tertiary mt-0.5">Unassigned</p>
+                </div>
+              </div>
+
+              {/* Use case breakdown */}
+              {Object.keys(summary.by_use_case).length > 0 && (
+                <div className="mb-5">
+                  <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-widest mb-3">By Category</p>
+                  <div className="space-y-1.5">
+                    {Object.entries(summary.by_use_case)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([uc, count]) => (
+                        <div key={uc} className="flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[11px] text-ink truncate">{uc}</span>
+                              <span className="text-[10px] font-semibold text-ink-muted ml-2 flex-shrink-0">{count}</span>
+                            </div>
+                            <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-violet-500 rounded-full transition-all"
+                                style={{ width: `${(count / summary.total) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Workload bars */}
+              {summary.by_assignee.length > 0 && (
+                <div className="mb-5">
+                  <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-widest mb-3">Workload</p>
+                  <div className="space-y-2">
+                    {summary.by_assignee.map(a => (
+                      <div key={a.name} className="flex items-center gap-3">
+                        <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0">
+                          {initials(a.name)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[11px] text-ink truncate">{a.name}</span>
+                            <span className="text-[10px] font-semibold text-ink-muted ml-2 flex-shrink-0">{a.count}</span>
+                          </div>
+                          <div className="h-1 bg-surface-3 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary rounded-full transition-all"
+                              style={{ width: `${(a.count / summary.total) * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Message preview */}
+              <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-widest mb-2">Message Preview</p>
+              <pre className="text-[11px] text-ink-muted leading-relaxed bg-surface-2 rounded-xl px-4 py-3.5 whitespace-pre-wrap font-sans border border-hairline mb-5">
+                {summary.message}
+              </pre>
+
+              {/* Recipients */}
+              {summary.recipients.length > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold text-ink-tertiary uppercase tracking-widest mb-2">Sending To</p>
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {summary.recipients.map(r => (
+                      <span key={r} className="text-[10px] font-mono px-2.5 py-1 rounded-lg bg-surface-2 border border-hairline text-ink-muted">
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {!summary.wa_configured && (
+                <div className="flex items-start gap-2 mt-3 px-3 py-2.5 rounded-xl bg-amber-900/15 border border-amber-900/30">
+                  <AlertCircle size={13} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-amber-400">WhatsApp not configured. Add <code className="font-mono">WHATSAPP_PHONE_NUMBER_ID</code>, <code className="font-mono">WHATSAPP_ACCESS_TOKEN</code>, and <code className="font-mono">WHATSAPP_RECIPIENTS</code> to your <code className="font-mono">.env</code>.</p>
+                </div>
+              )}
+
+              {error && (
+                <div className="flex items-center gap-2 mt-3 text-red-400 text-xs">
+                  <AlertCircle size={13} className="flex-shrink-0" />
+                  {error}
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+
+        {/* Footer */}
+        {!loading && !sent && summary && (
+          <div className="flex-shrink-0 px-6 py-4 border-t border-hairline flex items-center justify-end gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-medium text-ink-subtle hover:text-ink rounded-xl hover:bg-surface-2 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSend}
+              disabled={sending || !summary.wa_configured || summary.recipients.length === 0}
+              className="px-4 py-2 text-xs font-semibold bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl transition-colors flex items-center gap-2"
+            >
+              {sending ? (
+                <><RefreshCw size={12} className="animate-spin" /> Sending…</>
+              ) : (
+                <><Send size={12} /> Send to {summary.recipients.length} recipient{summary.recipients.length !== 1 ? 's' : ''}</>
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── ticket card ───────────────────────────────────────────────────────────────
 
 function TicketCard({ item, onClick }: { item: WorkItem; onClick: () => void }) {
@@ -602,6 +823,7 @@ export default function DevOps() {
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [selected, setSelected] = useState<WorkItem | null>(null)
+  const [showSummary, setShowSummary] = useState(false)
 
   const fetchTickets = useCallback(async () => {
     setLoading(true)
@@ -653,6 +875,14 @@ export default function DevOps() {
             <span className="text-[10px] text-ink-tertiary hidden sm:block">{relativeTime(lastRefresh.toISOString())}</span>
           )}
           <button
+            onClick={() => setShowSummary(true)}
+            title="Send Sprint Summary via WhatsApp"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600/15 hover:bg-green-600/25 border border-green-600/30 text-green-400 text-xs font-medium transition-colors"
+          >
+            <Send size={13} />
+            <span className="hidden sm:inline">Sprint Summary</span>
+          </button>
+          <button
             onClick={fetchTickets}
             disabled={loading}
             title="Refresh"
@@ -685,6 +915,7 @@ export default function DevOps() {
       </div>
 
       {selected && <TicketDetailPanel item={selected} onClose={() => setSelected(null)} />}
+      {showSummary && <SprintSummaryModal onClose={() => setShowSummary(false)} />}
     </div>
   )
 }

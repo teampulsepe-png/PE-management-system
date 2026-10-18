@@ -87,6 +87,7 @@ class AssigneeCount(BaseModel):
 class SprintSummaryOut(BaseModel):
     total: int
     by_type: dict[str, int]
+    by_use_case: dict[str, int]
     by_assignee: list[AssigneeCount]
     unassigned: int
     message: str
@@ -193,14 +194,35 @@ _TYPE_EMOJI: dict[str, str] = {
     "Epic": "🚀",
 }
 
+_CATEGORY_RULES: list[tuple[str, list[str]]] = [
+    ("Access & Identity",               ["access", "identity", "permission", "role", "auth", "sso", "rbac"]),
+    ("Cluster creation/Update",         ["cluster", "node", "aks", "eks", "kubernetes", "k8s", "provision"]),
+    ("Governance & Compliance",         ["governance", "compliance", "policy", "audit", "regulation"]),
+    ("Dashboards & Reporting",          ["dashboard", "report", "analytics", "metric", "kpi", "chart"]),
+    ("Liveops",                         ["liveops", "live ops", "incident", "on-call", "oncall", "alert", "monitoring"]),
+    ("Github/Claude",                   ["github", "claude", "ai", "llm", "copilot", "automation"]),
+    ("Cloud Platform & Infrastructure", ["infrastructure", "infra", "cloud", "azure", "aws", "gcp", "network", "storage", "pipeline"]),
+]
+
+
+def _categorise(ticket: WorkItemOut) -> str:
+    haystack = f"{ticket.use_case_name} {ticket.title}".lower()
+    for category, keywords in _CATEGORY_RULES:
+        if any(kw in haystack for kw in keywords):
+            return category
+    return "Other"
+
 
 def _build_sprint_message(tickets: list[WorkItemOut]) -> str:
     by_type: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     by_assignee: dict[str, int] = {}
     unassigned = 0
 
     for t in tickets:
         by_type[t.type] = by_type.get(t.type, 0) + 1
+        cat = _categorise(t)
+        by_category[cat] = by_category.get(cat, 0) + 1
         if t.assigned_to == "Unassigned":
             unassigned += 1
         else:
@@ -211,8 +233,12 @@ def _build_sprint_message(tickets: list[WorkItemOut]) -> str:
         "━━━━━━━━━━━━━━━━━",
         f"*Total:* {len(tickets)} ticket{'s' if len(tickets) != 1 else ''}",
         "",
-        "*By Type*",
+        "*By Category*",
     ]
+    for cat, count in sorted(by_category.items(), key=lambda x: (-x[1], x[0])):
+        lines.append(f"• {cat}: {count}")
+
+    lines += ["", "*By Type*"]
     for type_name, count in sorted(by_type.items(), key=lambda x: -x[1]):
         emoji = _TYPE_EMOJI.get(type_name, "•")
         lines.append(f"{emoji} {type_name}: {count}")
@@ -226,7 +252,7 @@ def _build_sprint_message(tickets: list[WorkItemOut]) -> str:
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━",
-        "_Sent from OCTAVE PE Management_",
+        "Sent from Teampulse PE Management",
     ]
     return "\n".join(lines)
 
@@ -247,11 +273,14 @@ async def get_sprint_summary():
     sprint_tickets = [t for t in all_tickets if t.board_column == "Current Sprint"]
 
     by_type: dict[str, int] = {}
+    by_use_case: dict[str, int] = {}
     by_assignee_raw: dict[str, int] = {}
     unassigned = 0
 
     for t in sprint_tickets:
         by_type[t.type] = by_type.get(t.type, 0) + 1
+        cat = _categorise(t)
+        by_use_case[cat] = by_use_case.get(cat, 0) + 1
         if t.assigned_to == "Unassigned":
             unassigned += 1
         else:
@@ -268,6 +297,7 @@ async def get_sprint_summary():
     return SprintSummaryOut(
         total=len(sprint_tickets),
         by_type=by_type,
+        by_use_case=by_use_case,
         by_assignee=by_assignee,
         unassigned=unassigned,
         message=_build_sprint_message(sprint_tickets),
