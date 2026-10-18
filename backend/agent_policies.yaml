@@ -1,0 +1,76 @@
+guardrails:
+  # These operations are never exposed as tools — agent cannot perform them under any circumstances
+  blocked_operations:
+    - delete_cluster
+    - terminate_cluster
+    - drop_catalog
+    - drop_schema
+    - drop_table
+    - drop_volume
+    - delete_user
+    - delete_service_principal
+    - delete_sql_warehouse
+    - delete_job
+    - delete_group
+    - delete_instance_pool
+
+  # These operations require the user to review and confirm before execution
+  require_confirmation:
+    - create_cluster
+    - edit_cluster
+    - start_cluster
+    - restart_cluster
+    - install_libraries
+    - create_instance_pool
+    - grant_privilege
+    - revoke_privilege
+    - add_user_to_group
+    - remove_user_from_group
+    - create_group
+    - create_sql_warehouse
+    - edit_sql_warehouse
+    - stop_sql_warehouse
+    - create_job
+    - run_job
+    - cancel_job_run
+
+# Rules evaluated before any grant_privilege or revoke_privilege is executed.
+# Rules are checked top-to-bottom; first match wins.
+# If no rule matches, the operation is allowed.
+permission_policies:
+  - name: Production catalog block
+    match:
+      resource_prefix: "aa_data_prod"
+    block: true
+    deny_message: >
+      Production catalog grants must go through the formal access request process.
+      Please raise a ticket in the LiveOps system.
+
+  - name: aa_data_dev DS restriction
+    match:
+      resource_prefix: "aa_data_dev"
+      principal_groups:
+        - data_scientists
+    allow:
+      max_level: TABLE
+    deny_message: >
+      Data Scientists can only receive table-level access on aa_data_dev.
+      Schema-level or catalog-level grants are not permitted for this group.
+
+  - name: aa_data_dev gold DE access
+    match:
+      resource: "aa_data_dev.gold"
+      principal_groups:
+        - data_engineers_senior
+        - data_engineers_lead
+    allow:
+      max_level: SCHEMA
+
+  - name: aa_data_dev general restriction
+    match:
+      resource_prefix: "aa_data_dev"
+    allow:
+      max_level: SCHEMA
+    deny_message: >
+      Catalog-level grants on aa_data_dev are not permitted via the agent.
+      Please raise a ticket if catalog-level access is required.

@@ -1,5 +1,5 @@
 export type RecurrenceType = 'weekly' | 'monthly' | 'quarterly' | 'annually'
-export type TeamType = 'pe' | 'so'
+export type TeamType = 'pe' | 'so' | 'liveops'
 export type OccurrenceStatus = 'pending' | 'in_progress' | 'done' | 'skipped'
 
 export interface Task {
@@ -367,7 +367,7 @@ export type LiveOpsTicketStatus =
   | 'draft' | 'pending_wl' | 'pending_tl' | 'pending_lo'
   | 'open' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'on_hold' | 'pending_review'
 export type LiveOpsApprovalStatus = 'pending' | 'approved' | 'rejected' | 'pushed_back' | 'na'
-export type LiveOpsMemberRoleType = 'workstream_lead' | 'team_lead' | 'lo_manager' | 'platform_engineer' | 'liveops_engineer'
+export type LiveOpsMemberRoleType = 'workstream_lead' | 'team_lead'
 export type LiveOpsAssignmentStatus = 'pending' | 'active' | 'completed' | 'rejected'
 
 export interface LiveOpsBusinessUnit { id: string; name: string; isActive: boolean }

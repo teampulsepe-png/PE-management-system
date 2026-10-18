@@ -15,6 +15,7 @@ from backend.db import models  # noqa: F401
 from backend.db.session import SessionLocal
 from backend.db.models import (
     TeamMember,
+    Role,
     LiveOpsMemberRole,
     LiveOpsBusinessUnit,
     LiveOpsTicketType,
@@ -155,12 +156,35 @@ PTS_USERS = [
     {"name": "Ransika",          "email": "ransikasi@jkintranet.com"},
 ]
 
+# ── Team membership ────────────────────────────────────────────────────────────
+# PE team members (RoleID=12 in PTS)
+PE_EMAILS: set[str] = {
+    "chamilasi@jkintranet.com",
+    "dhananjayj@jkintranet.com",
+    "yusufa@jkintranet.com",
+    "nimeshr@jkintranet.com",
+}
+
+# LiveOps team members (RoleID=15 engineers + RoleID=20 managers)
+LIVEOPS_EMAILS: set[str] = {
+    "lalithaw@jkintranet.com",
+    "octaveu.jkh@keells.com",
+    "anjalikaab@jkintranet.com",
+    "janinduna@jkintranet.com",
+    "ramirug@jkintranet.com",
+    "himakaral@jkintranet.com",
+    "aushata@jkintranet.com",
+}
+
+# LO Managers (liveops team + lead role)
+LO_MANAGER_EMAILS: set[str] = {
+    "lalithaw@jkintranet.com",
+    "octaveu.jkh@keells.com",
+}
+
 # ── LiveOps role assignments ───────────────────────────────────────────────────
-# email → list of roles to assign
+# Only cross-team approval roles belong here; team identity is set via team_id
 LIVEOPS_ROLES: dict[str, list[str]] = {
-    # LO Managers (RoleID=20)
-    "lalithaw@jkintranet.com":   ["lo_manager"],
-    "octaveu.jkh@keells.com":    ["lo_manager"],
     # Workstream Leads (PLID in PTS-TicketApprovers)
     "mohamedinm@jkintranet.com": ["workstream_lead", "team_lead"],
     "rajithan@jkintranet.com":   ["workstream_lead", "team_lead"],
@@ -169,22 +193,12 @@ LIVEOPS_ROLES: dict[str, list[str]] = {
     "yusufi@jkintranet.com":     ["workstream_lead"],
     "sahanp@jkintranet.com":     ["workstream_lead"],
     "muhammadai@jkintranet.com": ["workstream_lead"],
-    "chamilasi@jkintranet.com":  ["workstream_lead", "team_lead", "platform_engineer"],
+    "chamilasi@jkintranet.com":  ["workstream_lead", "team_lead"],
     # Practice Leads (DLID in PTS-TicketApprovers) — not already added above
     "shanend@jkintranet.com":    ["team_lead"],
     "ruwanw@jkintranet.com":     ["team_lead"],
     "imtiazi@jkintranet.com":    ["team_lead"],
     "sumanir@jkintranet.com":    ["team_lead"],
-    # Platform Engineers (RoleID=12) — not already added above
-    "dhananjayj@jkintranet.com": ["platform_engineer"],
-    "yusufa@jkintranet.com":     ["platform_engineer"],
-    "nimeshr@jkintranet.com":    ["platform_engineer"],
-    # LiveOps Engineers (RoleID=15)
-    "anjalikaab@jkintranet.com": ["liveops_engineer"],
-    "janinduna@jkintranet.com":  ["liveops_engineer"],
-    "ramirug@jkintranet.com":    ["liveops_engineer"],
-    "himakaral@jkintranet.com":  ["liveops_engineer"],
-    "aushata@jkintranet.com":    ["liveops_engineer"],
 }
 
 # ── Approver configs from PTS-TicketApprovers ─────────────────────────────────
@@ -264,9 +278,15 @@ def seed():
             if email in existing_emails:
                 members_skipped += 1
                 continue
+            if email in PE_EMAILS:
+                team_id = "pe"
+            elif email in LIVEOPS_EMAILS:
+                team_id = "liveops"
+            else:
+                team_id = None
             db.add(TeamMember(
                 id=str(uuid.uuid4()),
-                team_id=None,
+                team_id=team_id,
                 name=u["name"].strip(),
                 email=email,
                 role_id=None,
@@ -283,7 +303,23 @@ def seed():
             if m.email
         }
 
-        # ── 3. Assign liveops member roles ────────────────────────────────────
+        # ── 3. Set lead role_id for LO Managers ───────────────────────────────
+        lead_role = db.query(Role).filter_by(name="lead").first()
+        if lead_role:
+            lo_role_set = 0
+            for email in LO_MANAGER_EMAILS:
+                mid = email_to_id.get(email.lower())
+                if mid:
+                    m = db.query(TeamMember).filter_by(id=mid).first()
+                    if m and m.role_id != lead_role.id:
+                        m.role_id = lead_role.id
+                        lo_role_set += 1
+            db.commit()
+            print(f"LO Manager role_id set: {lo_role_set}")
+        else:
+            print("  WARNING: 'lead' role not found in roles table — skipping LO Manager role_id assignment")
+
+        # ── 4. Assign liveops member roles ────────────────────────────────────
         existing_lo_roles = {
             (r.member_id, r.role)
             for r in db.query(LiveOpsMemberRole).all()
@@ -308,11 +344,11 @@ def seed():
         db.commit()
         print(f"LiveOps member roles: {roles_added} inserted, {roles_skipped} already existed")
 
-        # ── 4. Build lookup maps for BU and ticket type ────────────────────────
+        # ── 5. Build lookup maps for BU and ticket type ────────────────────────
         bu_map: dict[str, str] = {b.name: b.id for b in db.query(LiveOpsBusinessUnit).all()}
         tt_map: dict[str, str] = {t.name: t.id for t in db.query(LiveOpsTicketType).all()}
 
-        # ── 5. Update existing approver configs with real WL/PL ────────────────
+        # ── 6. Update existing approver configs with real WL/PL ────────────────
         cfg_updated = cfg_missing = 0
         for tt_name, bu_name, wl_email, pl_email in APPROVER_CONFIGS:
             tt_id = tt_map.get(tt_name)
@@ -354,7 +390,7 @@ def seed():
         db.commit()
         print(f"Approver configs updated/inserted: {cfg_updated}, skipped: {cfg_missing}")
 
-        # ── 6. Insert LMS configs (option B: all ticket types → Sahan/Chamila) ─
+        # ── 7. Insert LMS configs (option B: all ticket types → Sahan/Chamila) ─
         lms_added = lms_skipped = 0
         for tt_name, bu_name, wl_email, pl_email in LMS_CONFIGS:
             tt_id = tt_map.get(tt_name)

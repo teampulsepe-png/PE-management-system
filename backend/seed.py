@@ -19,8 +19,9 @@ from backend.db.models import (
 )
 
 TEAMS = [
-    {"id": "pe", "name": "PE"},
-    {"id": "so", "name": "SO"},
+    {"id": "pe",      "name": "PE"},
+    {"id": "so",      "name": "SO"},
+    {"id": "liveops", "name": "LiveOps"},
 ]
 
 ROLES = ["user", "lead", "head", "admin"]

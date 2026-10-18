@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.db.database import engine, Base
 from backend.db import models  # noqa: F401
-from backend.routers import tasks, occurrences, members, user, activity, notifications, kpi, subscriptions, projects, push, tracker, workload, settings, cost, liveops, liveops_reports, onboarding, mywork, devops
+from backend.routers import tasks, occurrences, members, user, activity, notifications, kpi, subscriptions, projects, push, tracker, workload, settings, cost, liveops, liveops_reports, onboarding, mywork, devops, databricks_agent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +56,7 @@ app.include_router(liveops_reports.router)
 app.include_router(onboarding.router)
 app.include_router(mywork.router)
 app.include_router(devops.router)
+app.include_router(databricks_agent.router)
 
 
 @app.get("/api/health")

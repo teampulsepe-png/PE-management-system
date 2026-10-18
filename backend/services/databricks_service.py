@@ -19,6 +19,22 @@ class DatabricksError(Exception):
     pass
 
 
+_ws_client = None
+
+
+def get_workspace_client():
+    """Return a cached WorkspaceClient for agent tool handlers."""
+    global _ws_client
+    if _ws_client is None:
+        if not _HOST or not _TOKEN:
+            raise DatabricksError(
+                "DATABRICKS_HOST and DATABRICKS_TOKEN must be set in .env"
+            )
+        from databricks.sdk import WorkspaceClient as _WC
+        _ws_client = _WC(host=_HOST, token=_TOKEN)
+    return _ws_client
+
+
 def run_cost_notebook() -> dict:
     """
     Submit the cost-calculation notebook as a one-time serverless run,

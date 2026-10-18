@@ -55,8 +55,6 @@ const STATUS_LABEL: Record<string, string> = {
 
 const ROLE_LABEL: Record<LiveOpsMemberRoleType, string> = {
   workstream_lead: 'Workstream Lead', team_lead: 'Practice Lead',
-  lo_manager: 'LO Manager', platform_engineer: 'Platform Engineer',
-  liveops_engineer: 'LiveOps Engineer',
 }
 
 // ── utilities ─────────────────────────────────────────────────────────────────
@@ -813,12 +811,12 @@ interface DetailPanelProps {
   onAction: (updated: LiveOpsTicketDetail) => void
   memberEmail: string
   memberId: string | null
-  myRoles: Set<string>
+  isLoManager: boolean
   isAdmin: boolean
   assignableMembers: LiveOpsAssignableMember[]
 }
 
-function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, myRoles, isAdmin, assignableMembers }: DetailPanelProps) {
+function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoManager, isAdmin, assignableMembers }: DetailPanelProps) {
   const [comment, setComment] = useState('')
   const [commentResolved, setCommentResolved] = useState('')
   const [postingComment, setPostingComment] = useState(false)
@@ -866,7 +864,6 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, myRoles
     setOverrideUrgency(ticket.urgency)
   }, [ticket])
 
-  const isLoManager = myRoles.has('lo_manager') || isAdmin
   const isSubmitter = localTicket.submittedById === memberId
 
   const myActiveAssignment = localTicket.assignments.find(
@@ -1615,7 +1612,7 @@ export default function LiveOps() {
     return new Set(memberRoles.filter(r => r.memberId === memberId).map(r => r.role))
   }, [memberRoles, memberId])
 
-  const isLoManager = myRoles.has('lo_manager')
+  const isLoManager = currentUser?.teamId === 'liveops' && ['lead', 'head'].includes(currentUser?.role ?? '')
   const isAdmin = currentUser?.role === 'admin' || !!(currentUser?.hasAdminAccess)
 
   // Visible tabs
@@ -1623,10 +1620,10 @@ export default function LiveOps() {
     const result: Array<{ id: TabId; label: string; count?: number }> = [
       { id: 'my-tickets', label: 'My Tickets', count: myTickets.filter(t => !['completed', 'cancelled', 'rejected'].includes(t.status)).length || undefined },
     ]
-    if (myRoles.has('workstream_lead') || myRoles.has('team_lead') || myRoles.has('lo_manager') || isAdmin) {
+    if (myRoles.has('workstream_lead') || myRoles.has('team_lead') || isLoManager || isAdmin) {
       result.push({ id: 'approvals', label: 'Approvals', count: approvalTickets.length || undefined })
     }
-    if (myRoles.has('platform_engineer') || isAdmin) {
+    if (currentUser?.teamId === 'pe' || currentUser?.teamId === 'liveops' || isAdmin) {
       result.push({ id: 'my-work', label: 'My Work', count: myWorkTickets.length || undefined })
     }
     if (isAdmin || isLoManager) {
@@ -1634,7 +1631,7 @@ export default function LiveOps() {
       result.push({ id: 'admin', label: 'Admin' })
     }
     return result
-  }, [myRoles, myTickets, approvalTickets, myWorkTickets, isAdmin])
+  }, [myRoles, myTickets, approvalTickets, myWorkTickets, isAdmin, isLoManager, currentUser])
 
   // Load lookup tables on mount — no auth required for any of these
   const loadInitial = useCallback(async () => {
@@ -1665,7 +1662,7 @@ export default function LiveOps() {
       const mine = pending.filter(t =>
         (t.status === 'pending_wl' && (t.workstreamLeadId === memberId || isAdmin)) ||
         (t.status === 'pending_tl' && (t.teamLeadId === memberId || isAdmin)) ||
-        (t.status === 'pending_lo' && (myRoles.has('lo_manager') || isAdmin))
+        (t.status === 'pending_lo' && (isLoManager || isAdmin))
       )
       setApprovalTickets(mine)
     } else if (tab === 'my-work') {
@@ -1687,7 +1684,7 @@ export default function LiveOps() {
       const members = await api.settings.getMembers().catch(() => [])
       setTeamMembers(members.map((m: { id: string; name: string }) => ({ id: m.id, name: m.name })))
     }
-  }, [memberEmail, memberId, myRoles, isAdmin])
+  }, [memberEmail, memberId, myRoles, isAdmin, isLoManager])
 
   useEffect(() => { loadInitial() }, [loadInitial])
   useEffect(() => {
@@ -2181,7 +2178,7 @@ export default function LiveOps() {
           onAction={handleAction}
           memberEmail={memberEmail}
           memberId={memberId}
-          myRoles={myRoles}
+          isLoManager={isLoManager || isAdmin}
           isAdmin={isAdmin}
           assignableMembers={assignableMembers}
         />

@@ -14,7 +14,7 @@ from backend.db.models import (
     LiveOpsBusinessUnit, LiveOpsTicketType, LiveOpsUseCase,
     LiveOpsApproverConfig, LiveOpsMemberRole, LiveOpsSlaConfig,
     LiveOpsTicket, LiveOpsAssignment, LiveOpsComment, LiveOpsTicketEvent,
-    TeamMember, Notification,
+    TeamMember, Notification, Role,
 )
 from backend.schemas import (
     LiveOpsBusinessUnitOut, LiveOpsTicketTypeOut, LiveOpsUseCaseOut,
@@ -108,11 +108,6 @@ def _load_ticket(db: Session, ticket_id: str) -> LiveOpsTicket:
     return ticket
 
 
-def _get_member_roles(db: Session, member_id: str) -> set[str]:
-    rows = db.query(LiveOpsMemberRole).filter_by(member_id=member_id).all()
-    return {r.role for r in rows}
-
-
 def _is_system_admin(member: TeamMember) -> bool:
     if getattr(member, 'has_admin_access', False):
         return True
@@ -122,10 +117,30 @@ def _is_system_admin(member: TeamMember) -> bool:
         return False
 
 
+def _is_lo_manager(member: TeamMember) -> bool:
+    """LO Manager = LiveOps team member with lead or head role."""
+    if member.team_id != 'liveops':
+        return False
+    try:
+        return member.role is not None and member.role.name in ('lead', 'head')
+    except Exception:
+        return False
+
+
+def _is_assignable_engineer(assignee: TeamMember) -> bool:
+    """Assignable engineer = PE or LiveOps team member."""
+    return assignee.team_id in ('pe', 'liveops')
+
+
 def _lo_manager_id(db: Session) -> Optional[str]:
-    """Returns the first LO Manager member ID, or None."""
-    row = db.query(LiveOpsMemberRole).filter_by(role="lo_manager").first()
-    return row.member_id if row else None
+    """Returns the first LO Manager member ID (LiveOps team lead/head), or None."""
+    member = (
+        db.query(TeamMember)
+        .join(Role, TeamMember.role_id == Role.id)
+        .filter(TeamMember.team_id == 'liveops', Role.name.in_(['lead', 'head']))
+        .first()
+    )
+    return member.id if member else None
 
 
 def _notify(
@@ -251,7 +266,7 @@ def list_member_roles(db: Session = Depends(get_db)):
 
 @router.post("/admin/member-roles", response_model=LiveOpsMemberRoleOut, status_code=201)
 def create_member_role(body: LiveOpsMemberRoleCreate, db: Session = Depends(get_db)):
-    valid_roles = {"workstream_lead", "team_lead", "lo_manager", "platform_engineer", "liveops_engineer"}
+    valid_roles = {"workstream_lead", "team_lead"}
     if body.role not in valid_roles:
         raise HTTPException(status_code=422, detail=f"role must be one of {sorted(valid_roles)}")
     existing = db.query(LiveOpsMemberRole).filter_by(member_id=body.member_id, role=body.role).first()
@@ -300,23 +315,21 @@ def update_sla_config(urgency: str, body: LiveOpsSlaConfigUpdate, db: Session = 
 
 @router.get("/assignable-members", response_model=list[LiveOpsAssignableMember])
 def assignable_members(db: Session = Depends(get_db)):
-    """All engineers (PE + LOE) with their active assignment counts — for the assignment UI."""
-    eng_ids = {
-        r.member_id
-        for r in db.query(LiveOpsMemberRole)
-        .filter(LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]))
+    """All engineers (PE + LiveOps team) with their active assignment counts — for the assignment UI."""
+    members = (
+        db.query(TeamMember)
+        .filter(TeamMember.team_id.in_(['pe', 'liveops']))
         .all()
-    }
-    if not eng_ids:
+    )
+    if not members:
         return []
 
-    members = db.query(TeamMember).filter(TeamMember.id.in_(eng_ids)).all()
-
+    member_ids = {m.id for m in members}
     active_counts: dict[str, int] = {}
     active_assignments = (
         db.query(LiveOpsAssignment)
         .filter(
-            LiveOpsAssignment.assignee_id.in_(eng_ids),
+            LiveOpsAssignment.assignee_id.in_(member_ids),
             LiveOpsAssignment.status.in_(["pending", "active"]),
         )
         .all()
@@ -324,14 +337,14 @@ def assignable_members(db: Session = Depends(get_db)):
     for a in active_assignments:
         active_counts[a.assignee_id] = active_counts.get(a.assignee_id, 0) + 1
 
-    result = []
-    for m in sorted(members, key=lambda x: x.name):
-        result.append(LiveOpsAssignableMember(
+    return [
+        LiveOpsAssignableMember(
             id=m.id,
             name=m.name,
             active_assignment_count=active_counts.get(m.id, 0),
-        ))
-    return result
+        )
+        for m in sorted(members, key=lambda x: x.name)
+    ]
 
 
 # ── tickets — list ────────────────────────────────────────────────────────────
@@ -553,9 +566,8 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    roles = _get_member_roles(db, member.id)
     is_admin = _is_system_admin(member)
-    is_lo_or_admin = "lo_manager" in roles or is_admin
+    is_lo_or_admin = _is_lo_manager(member) or is_admin
     now = _now()
     pushes: list[tuple[str, str]] = []
 
@@ -615,12 +627,8 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
             assignee = db.query(TeamMember).filter_by(id=aid).first()
             if not assignee:
                 raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
-            role_ok = db.query(LiveOpsMemberRole).filter(
-                LiveOpsMemberRole.member_id == aid,
-                LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
-            ).first()
-            if not role_ok:
-                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a Platform Engineer or LiveOps Engineer")
+            if not _is_assignable_engineer(assignee):
+                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a PE or LiveOps team member")
             assignees.append(assignee)
 
         ticket.lo_status   = "approved"
@@ -740,9 +748,8 @@ def reject_ticket(ticket_id: str, body: LiveOpsRejectBody, member_email: str, db
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    roles = _get_member_roles(db, member.id)
     is_admin = _is_system_admin(member)
-    is_lo_or_admin = "lo_manager" in roles or is_admin
+    is_lo_or_admin = _is_lo_manager(member) or is_admin
     now = _now()
     pushes: list[tuple[str, str]] = []
 
@@ -803,9 +810,8 @@ def cancel_ticket(ticket_id: str, body: LiveOpsCancelBody, member_email: str, db
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    roles = _get_member_roles(db, member.id)
     is_submitter = ticket.submitted_by_id == member.id
-    is_lo_or_admin = "lo_manager" in roles or _is_system_admin(member)
+    is_lo_or_admin = _is_lo_manager(member) or _is_system_admin(member)
 
     if not is_submitter and not is_lo_or_admin:
         raise HTTPException(status_code=403, detail="Only the submitter or LO Manager can cancel")
@@ -834,8 +840,7 @@ def hold_ticket(ticket_id: str, body: LiveOpsHoldBody, member_email: str, db: Se
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can put tickets on hold")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
@@ -862,8 +867,7 @@ def resume_ticket(ticket_id: str, member_email: str, db: Session = Depends(get_d
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can resume tickets")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
@@ -895,8 +899,7 @@ def assign_ticket(ticket_id: str, body: LiveOpsAssignBody, member_email: str, db
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can assign tickets")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
@@ -913,12 +916,8 @@ def assign_ticket(ticket_id: str, body: LiveOpsAssignBody, member_email: str, db
         assignee = db.query(TeamMember).filter_by(id=aid).first()
         if not assignee:
             raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
-        role_ok = db.query(LiveOpsMemberRole).filter(
-            LiveOpsMemberRole.member_id == aid,
-            LiveOpsMemberRole.role.in_(["platform_engineer", "liveops_engineer"]),
-        ).first()
-        if not role_ok:
-            raise HTTPException(status_code=422, detail=f"{assignee.name} must be a Platform Engineer or LiveOps Engineer")
+        if not _is_assignable_engineer(assignee):
+            raise HTTPException(status_code=422, detail=f"{assignee.name} must be a PE or LiveOps team member")
         already = db.query(LiveOpsAssignment).filter_by(ticket_id=ticket_id, assignee_id=aid).filter(
             LiveOpsAssignment.status.in_(["pending", "active"])
         ).first()
@@ -969,8 +968,7 @@ def reassign_ticket(ticket_id: str, body: LiveOpsReassignBody, member_email: str
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can reassign")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
@@ -1106,8 +1104,7 @@ def confirm_complete(ticket_id: str, body: LiveOpsConfirmCompleteBody, member_em
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can confirm completion")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
@@ -1189,8 +1186,7 @@ def override_urgency(ticket_id: str, body: LiveOpsOverrideUrgencyBody, member_em
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    roles = _get_member_roles(db, member.id)
-    if "lo_manager" not in roles and not _is_system_admin(member):
+    if not _is_lo_manager(member) and not _is_system_admin(member):
         raise HTTPException(status_code=403, detail="Only LO Manager can override urgency")
     if body.urgency not in ("low", "medium", "high"):
         raise HTTPException(status_code=422, detail="urgency must be low, medium, or high")

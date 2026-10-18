@@ -6,12 +6,21 @@ import ActionCard, { type ActionProposal, type ActionStatus } from '../component
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface PendingWrite {
+  tool_use_id: string
+  name: string
+  params: Record<string, unknown>
+}
+
 interface AgentMessage {
   id: string
   role: 'user' | 'agent'
   text: string
   action?: ActionProposal
   actionStatus?: ActionStatus
+  // Real backend data for execution
+  pendingWrites?: PendingWrite[]
+  conversationHistory?: unknown[]
   timestamp: Date
 }
 
@@ -29,6 +38,82 @@ interface OperationRequest {
   reviewedAt?: Date
   reviewedBy?: string
   rejectionReason?: string
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
+
+async function apiChat(message: string, history: unknown[]): Promise<{
+  reply: string
+  pending_writes: PendingWrite[]
+  conversation_history: unknown[]
+}> {
+  const res = await fetch('/api/v1/databricks-agent/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, conversation_history: history }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? `Request failed (${res.status})`)
+  }
+  return res.json()
+}
+
+async function apiExecute(confirmedWrites: PendingWrite[], history: unknown[]): Promise<{
+  summary: string
+  results: unknown[]
+}> {
+  const res = await fetch('/api/v1/databricks-agent/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed_writes: confirmedWrites, conversation_history: history }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? `Execute failed (${res.status})`)
+  }
+  return res.json()
+}
+
+function mapToActionProposal(write: PendingWrite): ActionProposal | null {
+  const p = write.params
+  switch (write.name) {
+    case 'grant_privilege':
+      return {
+        type: 'grant_permission',
+        objectType: (p.securable_type as ActionProposal['objectType']) ?? 'TABLE',
+        objectName: p.full_name as string,
+        principal: p.principal as string,
+        principalType: String(p.principal ?? '').includes('@') ? 'USER' : 'GROUP',
+        privilege: p.privilege as string,
+      }
+    case 'revoke_privilege':
+      return {
+        type: 'revoke_permission',
+        objectType: (p.securable_type as ActionProposal['objectType']) ?? 'TABLE',
+        objectName: p.full_name as string,
+        principal: p.principal as string,
+        principalType: String(p.principal ?? '').includes('@') ? 'USER' : 'GROUP',
+        privilege: p.privilege as string,
+      }
+    case 'create_cluster':
+    case 'edit_cluster': {
+      const minW = p.autoscale_min_workers as number | undefined
+      const maxW = p.autoscale_max_workers as number | undefined
+      return {
+        type: 'create_cluster',
+        clusterName: (p.cluster_name ?? p.cluster_id) as string,
+        runtime: p.spark_version as string | undefined,
+        nodeType: p.node_type_id as string | undefined,
+        workers: p.num_workers != null
+          ? String(p.num_workers)
+          : minW != null ? `${minW}–${maxW}` : undefined,
+        autoTerminationMinutes: p.auto_termination_minutes as number | undefined,
+      }
+    }
+    default:
+      return null
+  }
 }
 
 // ── Mock request queue data ───────────────────────────────────────────────────
@@ -120,103 +205,6 @@ const GREETING: AgentMessage = {
   role: 'agent',
   text: "Hi! I'm your Databricks Operations Agent. I can help you automate common platform tasks:\n\n**Catalog permissions** — grant or revoke access to catalogs, schemas, and tables\n**Cluster management** — create new clusters or clone existing configurations\n**Access control** — manage group permissions on clusters and SQL warehouses\n\nDescribe what you need in plain language and I'll generate the operation for you.",
   timestamp: new Date(),
-}
-
-// ── Mock response logic ───────────────────────────────────────────────────────
-
-function buildMockResponse(input: string): { text: string; action?: ActionProposal } {
-  const q = input.toLowerCase()
-
-  if (/grant|give.*access|need.*access|permission|select|read.*from/.test(q)) {
-    const objectMatch = q.match(/(?:catalog|schema|table)\s+[`'"]?([\w.-]+)[`'"]?/)?.[1]
-    const groupMatch  = q.match(/(?:group|team)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-    const isSchema    = /schema/.test(q)
-    const isTable     = /table/.test(q)
-
-    return {
-      text: "I'll prepare the permission grant. Review the details below — you can execute immediately (admin) or submit for approval:",
-      action: {
-        type: 'grant_permission',
-        objectType: isTable ? 'TABLE' : isSchema ? 'SCHEMA' : 'CATALOG',
-        objectName: objectMatch ?? 'prod',
-        principal: groupMatch ?? 'my-team',
-        principalType: 'GROUP',
-        privilege: /write|modify|insert/.test(q) ? 'MODIFY' : 'SELECT',
-      },
-    }
-  }
-
-  if (/revoke|remove.*access|take.*away|remove.*permission/.test(q)) {
-    const objectMatch = q.match(/(?:catalog|schema|table)\s+[`'"]?([\w.-]+)[`'"]?/)?.[1]
-    const groupMatch  = q.match(/(?:group|team)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-
-    return {
-      text: "This will remove access. Please review carefully before proceeding:",
-      action: {
-        type: 'revoke_permission',
-        objectType: 'CATALOG',
-        objectName: objectMatch ?? 'prod',
-        principal: groupMatch ?? 'old-team',
-        principalType: 'GROUP',
-        privilege: 'SELECT',
-      },
-    }
-  }
-
-  if (/clone|copy.*cluster/.test(q)) {
-    const sourceMatch = q.match(/(?:clone|copy)\s+[`'"]?([\w-]+)[`'"]?/)?.[1] ??
-                        q.match(/(?:like|based on|similar to)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-    const groupMatch  = q.match(/(?:group|team)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-
-    return {
-      text: "I'll clone the cluster configuration. Here's the proposed setup:",
-      action: {
-        type: 'clone_cluster',
-        clusterName: `${sourceMatch ?? 'source'}-copy`,
-        sourceCluster: sourceMatch ?? 'ml-dev-01',
-        runtime: 'DBR 14.3 LTS ML',
-        nodeType: 'i3.xlarge',
-        workers: '2–4',
-        autoTerminationMinutes: 30,
-        accessGroups: [{ group: groupMatch ?? 'my-team', permission: 'CAN_ATTACH_TO' }],
-      },
-    }
-  }
-
-  if (/create.*cluster|new cluster|spin up/.test(q)) {
-    const sourceMatch = q.match(/(?:like|similar to|based on)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-    const groupMatch  = q.match(/(?:group|team)\s+[`'"]?([\w-]+)[`'"]?/)?.[1]
-
-    return {
-      text: "I'll prepare the cluster configuration. Here's what will be provisioned:",
-      action: {
-        type: 'create_cluster',
-        clusterName: 'new-cluster-01',
-        ...(sourceMatch ? { sourceCluster: sourceMatch } : {}),
-        runtime: 'DBR 14.3 LTS ML',
-        nodeType: 'i3.xlarge',
-        workers: '2–8',
-        autoTerminationMinutes: 60,
-        accessGroups: [{ group: groupMatch ?? 'my-team', permission: 'CAN_ATTACH_TO' }],
-      },
-    }
-  }
-
-  if (/who has|what permissions|check.*access|list.*permissions|current.*access/.test(q)) {
-    return {
-      text: "Here are the current permissions I found:\n\n**prod** (CATALOG)\n`data-team` (GROUP) — SELECT, USE CATALOG\n`analytics` (GROUP) — SELECT\n`admin` (GROUP) — ALL PRIVILEGES\n\n**staging** (CATALOG)\n`engineers` (GROUP) — SELECT, MODIFY, CREATE TABLE\n`analysts` (GROUP) — SELECT\n\nWould you like to make any changes?",
-    }
-  }
-
-  if (/list.*cluster|show.*cluster|what cluster|available cluster/.test(q)) {
-    return {
-      text: "Here are the clusters currently in your workspace:\n\n**ml-dev-01** — DBR 14.3 LTS ML · i3.xlarge · 2–8 workers · Running\n**analytics-prod** — DBR 13.3 LTS · m5.xlarge · 4–12 workers · Running\n**etl-batch** — DBR 14.2 · r4.2xlarge · 1–4 workers · Terminated\n**dev-sandbox** — DBR 14.3 LTS ML · m5.large · 0–4 workers · Running\n\nWould you like to create a new cluster or modify access on any of these?",
-    }
-  }
-
-  return {
-    text: "I can help with that. To generate the right operation, please tell me:\n\n1. **What resource?** (catalog name, schema path, or cluster name)\n2. **Who needs access?** (user email or group name)\n3. **What level?** (SELECT / MODIFY / CREATE TABLE / Can Attach To / etc.)\n\nExample: *\"Grant SELECT on prod.analytics schema to the data-team group\"*",
-  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -505,6 +493,7 @@ export default function Agent() {
   const [messages, setMessages] = useState<AgentMessage[]>([GREETING])
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
+  const [conversationHistory, setConversationHistory] = useState<unknown[]>([])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef       = useRef<HTMLTextAreaElement>(null)
@@ -517,6 +506,30 @@ export default function Agent() {
 
   function updateActionStatus(msgId: string, status: ActionStatus) {
     setMessages(prev => prev.map(m => m.id === msgId ? { ...m, actionStatus: status } : m))
+  }
+
+  async function executeWrites(msgId: string, pendingWrites: PendingWrite[], history: unknown[]) {
+    updateActionStatus(msgId, 'submitted')
+    try {
+      const data = await apiExecute(pendingWrites, history)
+      updateActionStatus(msgId, 'executed')
+      const summaryMsg: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: 'agent',
+        text: data.summary,
+        timestamp: new Date(),
+      }
+      setMessages(prev => [...prev, summaryMsg])
+    } catch (err) {
+      updateActionStatus(msgId, 'rejected')
+      const errMsg: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: 'agent',
+        text: `Execution failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        timestamp: new Date(),
+      }
+      setMessages(prev => [...prev, errMsg])
+    }
   }
 
   async function sendMessage(text: string) {
@@ -534,21 +547,47 @@ export default function Agent() {
     setInput('')
     setIsThinking(true)
 
-    await new Promise(res => setTimeout(res, 900 + Math.random() * 600))
+    try {
+      const data = await apiChat(trimmed, conversationHistory)
+      setConversationHistory(data.conversation_history)
 
-    const { text: responseText, action } = buildMockResponse(trimmed)
+      const hasPending = data.pending_writes.length > 0
+      const firstWrite = hasPending ? data.pending_writes[0] : null
+      const action = firstWrite ? mapToActionProposal(firstWrite) ?? undefined : undefined
 
-    const agentMsg: AgentMessage = {
-      id: crypto.randomUUID(),
-      role: 'agent',
-      text: responseText,
-      action,
-      actionStatus: action ? 'idle' : undefined,
-      timestamp: new Date(),
+      // For unmappable or multi-write ops, append a text summary to the reply
+      let replyText = data.reply
+      if (hasPending && !action) {
+        const opList = data.pending_writes.map(w => `• \`${w.name}\``).join('\n')
+        replyText += `\n\nPending operations:\n${opList}`
+      } else if (data.pending_writes.length > 1) {
+        const rest = data.pending_writes.slice(1).map(w => `• \`${w.name}\``).join('\n')
+        replyText += `\n\nAdditional queued operations:\n${rest}`
+      }
+
+      const agentMsgId = crypto.randomUUID()
+      const agentMsg: AgentMessage = {
+        id: agentMsgId,
+        role: 'agent',
+        text: replyText,
+        action,
+        actionStatus: hasPending ? 'idle' : undefined,
+        pendingWrites: hasPending ? data.pending_writes : undefined,
+        conversationHistory: data.conversation_history,
+        timestamp: new Date(),
+      }
+      setMessages(prev => [...prev, agentMsg])
+    } catch (err) {
+      const errMsg: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: 'agent',
+        text: `Sorry, something went wrong: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        timestamp: new Date(),
+      }
+      setMessages(prev => [...prev, errMsg])
+    } finally {
+      setIsThinking(false)
     }
-
-    setIsThinking(false)
-    setMessages(prev => [...prev, agentMsg])
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -702,7 +741,11 @@ export default function Agent() {
                         proposal={msg.action}
                         status={msg.actionStatus}
                         isAdmin={isAdmin}
-                        onExecute={() => updateActionStatus(msg.id, 'executed')}
+                        onExecute={() => {
+                          if (msg.pendingWrites && msg.conversationHistory) {
+                            executeWrites(msg.id, msg.pendingWrites, msg.conversationHistory)
+                          }
+                        }}
                         onSubmit={() => updateActionStatus(msg.id, 'submitted')}
                       />
                     </div>
