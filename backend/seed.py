@@ -5,7 +5,6 @@ Run from the project root:
 
 import uuid
 
-from backend.db.database import engine, Base
 from backend.db import models  # noqa: F401
 from backend.db.session import SessionLocal
 from backend.db.models import (
@@ -15,7 +14,7 @@ from backend.db.models import (
     TrackerArea, TrackerGroup, TrackerTask, TrackerSubtask,
     CostEntry, LiveOpsSlaConfig, LiveOpsBusinessUnit,
     LiveOpsTicketType, LiveOpsUseCase, LiveOpsApproverConfig,
-    LiveOpsMemberRole, TeamFeatureFlag,
+    LiveOpsMemberRole, TeamFeatureFlag, AgentConfig,
 )
 
 TEAMS = [
@@ -540,7 +539,6 @@ TRACKER_AREAS = [
 
 
 def seed():
-    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
 
     try:
@@ -884,6 +882,14 @@ def seed():
                 lo_added += 1
         db.commit()
         print(f"LiveOps member roles: {lo_added} inserted ({len(existing_lo_roles)} already existed)")
+
+        # --- Agent Config ---
+        if not db.query(AgentConfig).filter_by(id=1).first():
+            db.add(AgentConfig(id=1, agent_enabled=True))
+            db.commit()
+            print("Agent config: default row inserted")
+        else:
+            print("Agent config: already exists")
 
         print("Seed complete.")
 

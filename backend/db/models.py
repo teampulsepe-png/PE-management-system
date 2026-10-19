@@ -506,7 +506,7 @@ class LiveOpsMemberRole(Base):
     __table_args__ = (
         UniqueConstraint("member_id", "role", name="liveops_member_roles_unique"),
         CheckConstraint(
-            "role IN ('workstream_lead','team_lead')",
+            "role IN ('workstream_lead','team_lead','lo_manager','platform_engineer','liveops_engineer')",
             name="liveops_member_roles_role_check",
         ),
     )
