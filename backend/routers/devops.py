@@ -333,7 +333,11 @@ async def send_sprint_summary():
                 },
                 json=payload,
             )
-            (sent_to if res.is_success else failed).append(_mask_number(to))
+            if res.is_success:
+                sent_to.append(_mask_number(to))
+            else:
+                print(f"[WA] Failed {to}: {res.status_code} {res.text}")
+                failed.append(_mask_number(to))
 
     return SendResult(sent_to=sent_to, failed=failed)
 

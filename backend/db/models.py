@@ -315,6 +315,16 @@ class TeamFeatureFlag(Base):
     )
 
 
+class AgentConfig(Base):
+    """Single-row table controlling whether the Databricks agent is enabled."""
+    __tablename__ = "agent_config"
+
+    id            = Column(Integer, primary_key=True, default=1)
+    agent_enabled = Column(Boolean, nullable=False, default=True, server_default='true')
+    updated_by    = Column(String, nullable=True)
+    updated_at    = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class TrackerArea(Base):
     __tablename__ = "tracker_areas"
 

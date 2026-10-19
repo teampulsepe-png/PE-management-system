@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BotMessageSquare, Send, CheckCircle, XCircle, ChevronDown, Zap, Shield, RotateCcw, ListFilter, TriangleAlert, FlaskConical } from 'lucide-react'
+import { BotMessageSquare, Send, CheckCircle, XCircle, ChevronDown, Zap, Shield, RotateCcw, ListFilter, TriangleAlert, FlaskConical, PowerOff, Power } from 'lucide-react'
 import { useAppContext } from '../context/AppContext'
 import ActionCard, { type ActionProposal, type ActionStatus } from '../components/agent/ActionCard'
 
@@ -56,6 +56,18 @@ async function apiChat(message: string, history: unknown[]): Promise<{
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail ?? `Request failed (${res.status})`)
   }
+  return res.json()
+}
+
+async function apiStatus(): Promise<{ enabled: boolean; updated_by: string | null }> {
+  const res = await fetch('/api/v1/databricks-agent/status')
+  if (!res.ok) throw new Error('Failed to fetch agent status')
+  return res.json()
+}
+
+async function apiToggle(): Promise<{ enabled: boolean; updated_by: string | null }> {
+  const res = await fetch('/api/v1/databricks-agent/admin/toggle', { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to toggle agent')
   return res.json()
 }
 
@@ -494,6 +506,9 @@ export default function Agent() {
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
   const [conversationHistory, setConversationHistory] = useState<unknown[]>([])
+  const [agentEnabled, setAgentEnabled] = useState<boolean | null>(null)
+  const [agentDisabledBy, setAgentDisabledBy] = useState<string | null>(null)
+  const [isTogglingAgent, setIsTogglingAgent] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef       = useRef<HTMLTextAreaElement>(null)
@@ -501,6 +516,26 @@ export default function Agent() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isThinking])
+
+  useEffect(() => {
+    apiStatus()
+      .then(s => {
+        setAgentEnabled(s.enabled)
+        setAgentDisabledBy(s.updated_by)
+      })
+      .catch(() => setAgentEnabled(true)) // fail open — backend guard still enforces
+  }, [])
+
+  async function handleToggleAgent() {
+    setIsTogglingAgent(true)
+    try {
+      const s = await apiToggle()
+      setAgentEnabled(s.enabled)
+      setAgentDisabledBy(s.updated_by)
+    } finally {
+      setIsTogglingAgent(false)
+    }
+  }
 
   const pendingCount = INITIAL_REQUESTS.filter(r => r.status === 'pending').length
 
@@ -709,7 +744,49 @@ export default function Agent() {
       {activeTab === 'chat' && (
         <div className="flex-1 min-h-0 flex flex-col bg-surface-1 rounded-xl border border-hairline overflow-hidden">
 
+          {/* Admin toggle bar */}
+          {isAdmin && agentEnabled !== null && (
+            <div className={`flex items-center justify-between px-4 py-2.5 border-b border-hairline text-xs ${agentEnabled ? 'bg-surface-2' : 'bg-red-900/10'}`}>
+              <span className={`font-medium ${agentEnabled ? 'text-ink-muted' : 'text-red-400'}`}>
+                {agentEnabled ? 'Agent is active' : 'Agent is disabled'}
+              </span>
+              <button
+                onClick={handleToggleAgent}
+                disabled={isTogglingAgent}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  agentEnabled
+                    ? 'bg-red-900/20 text-red-400 hover:bg-red-900/30'
+                    : 'bg-primary/20 text-primary hover:bg-primary/30'
+                }`}
+              >
+                {agentEnabled ? <PowerOff size={12} /> : <Power size={12} />}
+                {isTogglingAgent ? 'Updating…' : agentEnabled ? 'Disable Agent' : 'Enable Agent'}
+              </button>
+            </div>
+          )}
+
+          {/* Disabled state */}
+          {agentEnabled === false && (
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 py-12">
+              <div className="w-12 h-12 rounded-xl bg-red-900/20 border border-red-900/40 flex items-center justify-center">
+                <PowerOff size={22} className="text-red-400" />
+              </div>
+              <div className="text-center space-y-1.5">
+                <p className="text-sm font-semibold text-ink">Agent Disabled</p>
+                <p className="text-xs text-ink-muted max-w-xs leading-relaxed">
+                  The Databricks Operations Agent has been turned off
+                  {agentDisabledBy ? ` by ${agentDisabledBy}` : ' by an admin'}.
+                  No requests can be made until it is re-enabled.
+                </p>
+              </div>
+              {!isAdmin && (
+                <p className="text-[11px] text-ink-subtle">Contact a PE admin to re-enable it.</p>
+              )}
+            </div>
+          )}
+
           {/* Messages */}
+          {agentEnabled !== false && (
           <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 space-y-5">
             {messages.map(msg => (
               <div key={msg.id} className={`flex items-end gap-2.5 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -761,6 +838,7 @@ export default function Agent() {
             {isThinking && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </div>
+          )}
 
           {/* Quick chips */}
           <div className="px-4 pt-3 pb-1 flex gap-2 overflow-x-auto scrollbar-none shrink-0">
@@ -768,7 +846,7 @@ export default function Agent() {
               <button
                 key={chip.label}
                 onClick={() => setInput(chip.prompt)}
-                disabled={isThinking}
+                disabled={isThinking || agentEnabled === false}
                 className="flex items-center gap-1.5 whitespace-nowrap text-[11px] font-medium px-2.5 py-1 rounded-lg border border-hairline bg-surface-2 text-ink-muted hover:border-primary hover:text-primary transition-colors disabled:opacity-40 disabled:pointer-events-none shrink-0"
               >
                 {chip.label}
@@ -784,15 +862,15 @@ export default function Agent() {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={isThinking}
-                placeholder='Ask the agent… e.g. "Give analytics group SELECT access to prod catalog"'
+                disabled={isThinking || agentEnabled === false}
+                placeholder={agentEnabled === false ? 'Agent is currently disabled' : 'Ask the agent… e.g. "Give analytics group SELECT access to prod catalog"'}
                 rows={1}
                 className="flex-1 resize-none rounded-xl border border-hairline bg-surface-2 text-sm text-ink placeholder-subtle px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-transparent disabled:opacity-50 transition-colors leading-relaxed"
                 style={{ maxHeight: '120px' }}
               />
               <button
                 onClick={() => sendMessage(input)}
-                disabled={!input.trim() || isThinking}
+                disabled={!input.trim() || isThinking || agentEnabled === false}
                 className="w-10 h-10 rounded-xl bg-primary hover:bg-primary/90 disabled:bg-surface-3 text-white disabled:text-ink-subtle flex items-center justify-center transition-colors flex-shrink-0"
               >
                 <Send size={16} />

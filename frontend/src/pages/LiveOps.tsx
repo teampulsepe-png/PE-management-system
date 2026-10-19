@@ -1694,12 +1694,12 @@ export default function LiveOps() {
   async function openDetail(id: string) {
     setLoadingDetailId(id)
     try {
-      const d = await api.liveops.getTicket(id)
+      const [d, members] = await Promise.all([
+        api.liveops.getTicket(id),
+        api.liveops.getAssignableMembers(),
+      ])
       setDetailTicket(d)
-      if (isAdmin || isLoManager) {
-        const members = await api.liveops.getAssignableMembers()
-        setAssignableMembers(members)
-      }
+      setAssignableMembers(members)
     } finally {
       setLoadingDetailId(null)
     }

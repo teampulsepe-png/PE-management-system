@@ -1,13 +1,13 @@
 """
 Two-phase agentic loop — Databricks AI Gateway provider (OpenAI-compatible).
 
-Requires:
-  DATABRICKS_HOST=https://<workspace>.azuredatabricks.net
-  DATABRICKS_TOKEN=dapi...
-  DATABRICKS_ENDPOINT_NAME=<model-serving-endpoint-name>
+Uses the OpenAI SDK pointed at the Databricks AI Gateway chat/completions endpoint:
+  POST {DATABRICKS_HOST}/ai-gateway/mlflow/v1/chat/completions
+  Authorization: Bearer {DATABRICKS_AI_GATEWAY_TOKEN}
 
-All three dataclass return types are imported from loop.py so the rest of the
-codebase has a single canonical definition regardless of which provider is active.
+Requires in .env:
+  DATABRICKS_HOST=https://<workspace>.azuredatabricks.net/
+  DATABRICKS_AI_GATEWAY_TOKEN=dapi...   (falls back to DATABRICKS_TOKEN)
 """
 
 from __future__ import annotations
@@ -23,26 +23,27 @@ from backend.agent.loop import ChatResult, ExecuteResult, PendingWrite
 from backend.agent.policy_engine import PolicyEngine, PolicyViolation
 from backend.agent.tool_definitions import ALL_TOOLS, WRITE_TOOL_NAMES
 
+_MODEL = "system.ai.claude-sonnet-4-5"
 _MAX_TOKENS = 4096
 _MAX_LOOP_TURNS = 12
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _get_client() -> tuple[OpenAI, str]:
-    """Return (OpenAI-compatible client, endpoint/model name) for Databricks."""
+def _get_client() -> OpenAI:
     host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
-    token = os.getenv("DATABRICKS_TOKEN")
-    endpoint = os.getenv("DATABRICKS_ENDPOINT_NAME")
+    token = (
+        os.getenv("DATABRICKS_AI_GATEWAY_TOKEN")
+        or os.getenv("DATABRICKS_TOKEN")
+    )
     if not host or not token:
-        raise RuntimeError("DATABRICKS_HOST and DATABRICKS_TOKEN must be set in .env")
-    if not endpoint:
-        raise RuntimeError("DATABRICKS_ENDPOINT_NAME must be set in .env")
-    client = OpenAI(
-        base_url=f"{host}/serving-endpoints",
+        raise RuntimeError(
+            "DATABRICKS_HOST and DATABRICKS_AI_GATEWAY_TOKEN must be set in .env"
+        )
+    return OpenAI(
+        base_url=f"{host}/ai-gateway/mlflow/v1",
         api_key=token,
     )
-    return client, endpoint
 
 
 def _to_openai_tools(anthropic_tools: list[dict]) -> list[dict]:
@@ -99,23 +100,28 @@ def run_chat(
     caller_name: str | None = None,
     caller_groups: list[str] | None = None,
 ) -> ChatResult:
-    client, model = _get_client()
+    client = _get_client()
     system_prompt = build_system_prompt(policy_engine, caller_name, caller_groups or [])
     openai_tools = _to_openai_tools(ALL_TOOLS)
 
-    # conversation_history stores user/assistant/tool messages only (no system msg)
-    messages: list[dict] = list(conversation_history) + [
+    # System message prepended; not stored in conversation_history to avoid duplication
+    messages: list[dict] = (
+        [{"role": "system", "content": system_prompt}]
+        + list(conversation_history)
+        + [{"role": "user", "content": user_message}]
+    )
+    # History we'll return — excludes the prepended system message
+    history: list[dict] = list(conversation_history) + [
         {"role": "user", "content": user_message}
     ]
+
     pending_writes: list[PendingWrite] = []
 
     for _ in range(_MAX_LOOP_TURNS):
-        api_messages = [{"role": "system", "content": system_prompt}] + messages
-
         response = client.chat.completions.create(
-            model=model,
+            model=_MODEL,
             max_tokens=_MAX_TOKENS,
-            messages=api_messages,
+            messages=messages,
             tools=openai_tools,
             tool_choice="auto",
         )
@@ -123,28 +129,26 @@ def run_chat(
         choice = response.choices[0]
         msg = choice.message
 
-        # Append assistant turn to history
+        # Build assistant entry for both the API messages list and stored history
         assistant_entry: dict[str, Any] = {"role": "assistant", "content": msg.content}
         if msg.tool_calls:
             assistant_entry["tool_calls"] = [
                 {
                     "id": tc.id,
                     "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
                 for tc in msg.tool_calls
             ]
         messages.append(assistant_entry)
+        history.append(assistant_entry)
 
         # ── stop: final text response ──────────────────────────────────────────
         if choice.finish_reason == "stop":
             return ChatResult(
                 reply=msg.content or "",
                 pending_writes=pending_writes,
-                conversation_history=messages,
+                conversation_history=history,
             )
 
         # ── tool_calls: model wants to invoke tools ────────────────────────────
@@ -160,11 +164,13 @@ def run_chat(
 
                 # ── blocked ────────────────────────────────────────────────────
                 if policy_engine.is_blocked(name):
-                    messages.append({
+                    tool_msg = {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": f"ERROR: '{name}' is a blocked operation and cannot be executed.",
-                    })
+                    }
+                    messages.append(tool_msg)
+                    history.append(tool_msg)
                     continue
 
                 # ── write tool: validate policy then queue ─────────────────────
@@ -184,16 +190,16 @@ def run_chat(
                             violation = e.message
 
                     if violation:
-                        messages.append({
+                        tool_msg = {
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": f"POLICY_VIOLATION: {violation}",
-                        })
+                        }
                     else:
                         new_pending.append(
                             PendingWrite(tool_use_id=tc.id, name=name, params=params)
                         )
-                        messages.append({
+                        tool_msg = {
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": json.dumps({
@@ -201,50 +207,55 @@ def run_chat(
                                 "message": "This write operation has been queued. "
                                            "The user will confirm before execution.",
                             }),
-                        })
+                        }
+                    messages.append(tool_msg)
+                    history.append(tool_msg)
                     continue
 
                 # ── read tool: execute silently ────────────────────────────────
                 try:
                     result = _execute_tool(name, params)
-                    messages.append({
+                    tool_msg = {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": json.dumps(result, default=str),
-                    })
+                    }
                 except Exception as exc:
-                    messages.append({
+                    tool_msg = {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": f"ERROR: {exc}",
-                    })
+                    }
+                messages.append(tool_msg)
+                history.append(tool_msg)
 
             pending_writes.extend(new_pending)
 
-            # Write ops were queued — ask model to summarise the plan
+            # Write ops queued — ask model to summarise the plan without tools
             if new_pending:
-                api_messages = [{"role": "system", "content": system_prompt}] + messages
                 summary_response = client.chat.completions.create(
-                    model=model,
+                    model=_MODEL,
                     max_tokens=_MAX_TOKENS,
-                    messages=api_messages,
+                    messages=messages,
                 )
                 summary_msg = summary_response.choices[0].message
-                messages.append({"role": "assistant", "content": summary_msg.content})
+                summary_entry = {"role": "assistant", "content": summary_msg.content}
+                messages.append(summary_entry)
+                history.append(summary_entry)
                 return ChatResult(
                     reply=summary_msg.content or "",
                     pending_writes=pending_writes,
-                    conversation_history=messages,
+                    conversation_history=history,
                 )
 
-            continue  # all reads — continue loop
+            continue  # all reads — loop continues
 
         break  # unexpected finish_reason
 
     return ChatResult(
         reply="I've gathered the information but hit my iteration limit. Please try a more specific request.",
         pending_writes=pending_writes,
-        conversation_history=messages,
+        conversation_history=history,
     )
 
 
@@ -256,7 +267,7 @@ def run_execute(
     policy_engine: PolicyEngine,
     caller_name: str | None = None,
 ) -> ExecuteResult:
-    client, model = _get_client()
+    client = _get_client()
     system_prompt = build_system_prompt(policy_engine, caller_name)
 
     results: list[dict] = []
@@ -286,7 +297,7 @@ def run_execute(
     )
 
     response = client.chat.completions.create(
-        model=model,
+        model=_MODEL,
         max_tokens=_MAX_TOKENS,
         messages=summary_messages,
     )
