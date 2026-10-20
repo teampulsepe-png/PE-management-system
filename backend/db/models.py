@@ -545,6 +545,9 @@ class LiveOpsTicket(Base):
     submitted_at    = Column(TIMESTAMP(timezone=True), nullable=True)   # null while draft
     sla_deadline    = Column(TIMESTAMP(timezone=True), nullable=True)   # set at submit
 
+    # Classification — lo | pe (who this ticket is routed to after approval)
+    assignee_type = Column(String, nullable=False, default="lo")
+
     # Approval chain — copied from LiveOpsApproverConfig at submit time
     workstream_lead_id = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
     team_lead_id       = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
@@ -565,11 +568,19 @@ class LiveOpsTicket(Base):
     lo_acted_at = Column(TIMESTAMP(timezone=True), nullable=True)
     lo_reason   = Column(Text, nullable=True)
 
+    pe_status   = Column(String, nullable=False, default="pending")   # pending|approved|rejected
+    pe_actor_id = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
+    pe_acted_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    pe_reason   = Column(Text, nullable=True)
+
     # Overall status
-    # draft|pending_wl|pending_tl|pending_lo|open|in_progress|completed|rejected|cancelled|on_hold
+    # draft|pending_wl|pending_tl|pending_lo|pending_pe|open|in_progress|completed|rejected|cancelled|on_hold
     status = Column(String, nullable=False, default="draft")
 
     currently_with_id = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
+
+    # Push-back tracking — records which stage last pushed back so resubmit routes correctly
+    pushed_back_from = Column(String, nullable=True)   # wl | tl | lo | pe
 
     # Terminal / hold states
     cancelled_by_id = Column(String, ForeignKey("team_members.id", ondelete="SET NULL"), nullable=True)
@@ -593,6 +604,7 @@ class LiveOpsTicket(Base):
     wl_actor        = relationship("TeamMember", foreign_keys=[wl_actor_id])
     tl_actor        = relationship("TeamMember", foreign_keys=[tl_actor_id])
     lo_actor        = relationship("TeamMember", foreign_keys=[lo_actor_id])
+    pe_actor        = relationship("TeamMember", foreign_keys=[pe_actor_id])
     currently_with  = relationship("TeamMember", foreign_keys=[currently_with_id])
     cancelled_by    = relationship("TeamMember", foreign_keys=[cancelled_by_id])
 
@@ -605,8 +617,9 @@ class LiveOpsTicket(Base):
 
     __table_args__ = (
         CheckConstraint("urgency IN ('low','medium','high')", name="liveops_tickets_urgency_check"),
+        CheckConstraint("assignee_type IN ('lo','pe')", name="liveops_tickets_assignee_type_check"),
         CheckConstraint(
-            "status IN ('draft','pending_wl','pending_tl','pending_lo','open','in_progress','completed','rejected','cancelled','on_hold','pending_review')",
+            "status IN ('draft','pending_wl','pending_tl','pending_lo','pending_pe','open','in_progress','completed','rejected','cancelled','on_hold','pending_review')",
             name="liveops_tickets_status_check",
         ),
     )

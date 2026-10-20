@@ -15,7 +15,7 @@ import type {
   LiveOpsTicketType, LiveOpsUseCase, LiveOpsMemberRoleRecord,
   LiveOpsAssignableMember, LiveOpsAnalyticsSummary, LiveOpsUrgency,
   LiveOpsComment, LiveOpsSlaConfig, LiveOpsApproverConfig,
-  LiveOpsMemberRoleType,
+  LiveOpsMemberRoleType, LiveOpsAssigneeType,
 } from '../types'
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -37,6 +37,7 @@ const STATUS_COLOR: Record<string, string> = {
   pending_wl:     'bg-amber-500/10 text-amber-400',
   pending_tl:     'bg-orange-500/10 text-orange-400',
   pending_lo:     'bg-fuchsia-500/10 text-fuchsia-400',
+  pending_pe:     'bg-cyan-500/10 text-cyan-400',
   open:           'bg-sky-500/10 text-sky-400',
   in_progress:    'bg-primary/10 text-primary',
   pending_review: 'bg-violet-500/10 text-violet-400',
@@ -48,7 +49,7 @@ const STATUS_COLOR: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Draft', pending_wl: 'Pending WL', pending_tl: 'Pending TL',
-  pending_lo: 'Pending LO', open: 'Open', in_progress: 'In Progress',
+  pending_lo: 'Pending LO', pending_pe: 'Pending PE', open: 'Open', in_progress: 'In Progress',
   pending_review: 'Pending Review',
   completed: 'Completed', rejected: 'Rejected', cancelled: 'Cancelled', on_hold: 'On Hold',
 }
@@ -184,6 +185,9 @@ function TicketRow({ ticket, onClick, isLoading }: { ticket: LiveOpsTicketListIt
         {/* Right zone */}
         <div className="flex flex-col items-end gap-1 flex-shrink-0">
           <div className="flex items-center gap-1.5">
+            <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${ticket.assigneeType === 'pe' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-fuchsia-500/10 text-fuchsia-400'}`}>
+              {ticket.assigneeType === 'pe' ? 'PE' : 'LO'}
+            </span>
             <StatusBadge status={ticket.status} />
             {sla === 'breached' && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" title={slaLabel(ticket.slaDeadline) ?? ''} />
@@ -208,7 +212,7 @@ function TicketRow({ ticket, onClick, isLoading }: { ticket: LiveOpsTicketListIt
 // ── approval chain ────────────────────────────────────────────────────────────
 
 function ApprovalChain({ ticket }: { ticket: LiveOpsTicketDetail }) {
-  type StageStatus = 'done' | 'rejected' | 'active' | 'na' | 'waiting'
+  type StageStatus = 'done' | 'rejected' | 'active' | 'na' | 'waiting' | 'pushed_back'
 
   const stages: Array<{ label: string; actor: string | null; date: string | null; status: StageStatus; reason?: string | null }> = [
     {
@@ -223,9 +227,10 @@ function ApprovalChain({ ticket }: { ticket: LiveOpsTicketDetail }) {
       date: ticket.wlActedAt,
       reason: ticket.wlReason,
       status:
-        ticket.wlStatus === 'approved' ? 'done' :
-        ticket.wlStatus === 'rejected' ? 'rejected' :
-        ticket.status === 'pending_wl' ? 'active' : 'waiting',
+        ticket.wlStatus === 'approved'    ? 'done' :
+        ticket.wlStatus === 'rejected'    ? 'rejected' :
+        ticket.wlStatus === 'pushed_back' ? 'pushed_back' :
+        ticket.status === 'pending_wl'    ? 'active' : 'waiting',
     },
     ...(ticket.tlStatus !== 'na' ? [{
       label: 'Practice Lead',
@@ -233,21 +238,35 @@ function ApprovalChain({ ticket }: { ticket: LiveOpsTicketDetail }) {
       date: ticket.tlActedAt,
       reason: ticket.tlReason,
       status: (
-        ticket.tlStatus === 'approved' ? 'done' :
-        ticket.tlStatus === 'rejected' ? 'rejected' :
-        ticket.status === 'pending_tl' ? 'active' : 'waiting'
+        ticket.tlStatus === 'approved'    ? 'done' :
+        ticket.tlStatus === 'rejected'    ? 'rejected' :
+        ticket.tlStatus === 'pushed_back' ? 'pushed_back' :
+        ticket.status === 'pending_tl'    ? 'active' : 'waiting'
       ) as StageStatus,
     }] : []),
-    {
+    ...(ticket.assigneeType === 'pe' ? [{
+      label: 'PE Manager',
+      actor: ticket.peActorName,
+      date: ticket.peActedAt,
+      reason: ticket.peReason,
+      status: (
+        ticket.peStatus === 'approved'     ? 'done' :
+        ticket.peStatus === 'rejected'     ? 'rejected' :
+        ticket.peStatus === 'pushed_back'  ? 'pushed_back' :
+        ticket.status === 'pending_pe'     ? 'active' : 'waiting'
+      ) as StageStatus,
+    }] : [{
       label: 'LO Manager',
       actor: ticket.loActorName,
       date: ticket.loActedAt,
       reason: ticket.loReason,
-      status:
-        ticket.loStatus === 'approved' ? 'done' :
-        ticket.loStatus === 'rejected' ? 'rejected' :
-        ticket.status === 'pending_lo' ? 'active' : 'waiting',
-    },
+      status: (
+        ticket.loStatus === 'approved'     ? 'done' :
+        ticket.loStatus === 'rejected'     ? 'rejected' :
+        ticket.loStatus === 'pushed_back'  ? 'pushed_back' :
+        ticket.status === 'pending_lo'     ? 'active' : 'waiting'
+      ) as StageStatus,
+    }]),
     {
       label: ticket.status === 'completed' ? 'Completed' :
              ticket.status === 'pending_review' ? 'Pending Review' :
@@ -260,31 +279,36 @@ function ApprovalChain({ ticket }: { ticket: LiveOpsTicketDetail }) {
     },
   ]
 
-  const rejectionIdx = stages.findIndex(s => s.status === 'rejected')
+  const rejectionIdx  = stages.findIndex(s => s.status === 'rejected')
+  const pushbackIdx   = stages.findIndex(s => s.status === 'pushed_back')
 
   return (
     <div className="flex items-start overflow-x-auto gap-0 pb-1">
       {stages.map((stage, i) => {
         const isAfterRejection = rejectionIdx >= 0 && i > rejectionIdx
+        const isAfterPushback  = pushbackIdx  >= 0 && i > pushbackIdx
         return (
-          <div key={stage.label} className={`flex items-start transition-opacity ${isAfterRejection ? 'opacity-30' : ''}`}>
+          <div key={stage.label} className={`flex items-start transition-opacity ${isAfterRejection || isAfterPushback ? 'opacity-30' : ''}`}>
             <div className="flex flex-col items-center" style={{ minWidth: 84 }}>
               <div className={`relative w-8 h-8 rounded-full border-2 flex items-center justify-center ${
-                stage.status === 'done'     ? 'border-emerald-500 bg-emerald-500' :
-                stage.status === 'rejected' ? 'border-red-400 bg-red-400' :
-                stage.status === 'active'   ? 'border-primary bg-primary/10' :
+                stage.status === 'done'        ? 'border-emerald-500 bg-emerald-500' :
+                stage.status === 'rejected'    ? 'border-red-400 bg-red-400' :
+                stage.status === 'pushed_back' ? 'border-amber-400 bg-amber-400' :
+                stage.status === 'active'      ? 'border-primary bg-primary/10' :
                 'border-hairline bg-surface-2'
               }`}>
                 {stage.status === 'active' && (
                   <div className="absolute inset-0 rounded-full ring-4 ring-primary/25 animate-pulse" />
                 )}
-                {stage.status === 'done'     ? <Check size={12} className="text-white" /> :
-                 stage.status === 'rejected' ? <X size={12} className="text-white" /> :
-                 stage.status === 'active'   ? <div className="w-2 h-2 rounded-full bg-primary" /> :
+                {stage.status === 'done'        ? <Check size={12} className="text-white" /> :
+                 stage.status === 'rejected'    ? <X size={12} className="text-white" /> :
+                 stage.status === 'pushed_back' ? <CornerDownLeft size={11} className="text-white" /> :
+                 stage.status === 'active'      ? <div className="w-2 h-2 rounded-full bg-primary" /> :
                  <div className="w-2 h-2 rounded-full bg-surface-4" />}
               </div>
               <p className="text-[10px] font-medium text-ink-muted mt-1.5 text-center leading-tight px-1">{stage.label}</p>
-              {stage.actor && <p className="text-[10px] text-ink-subtle text-center max-w-[80px] truncate">{stage.actor}</p>}
+              {stage.status === 'pushed_back' && <p className="text-[9px] text-amber-400 text-center">pushed back</p>}
+              {stage.actor && stage.status !== 'pushed_back' && <p className="text-[10px] text-ink-subtle text-center max-w-[80px] truncate">{stage.actor}</p>}
             </div>
             {i < stages.length - 1 && (
               <div className="flex items-center mt-4" style={{ minWidth: 16 }}>
@@ -407,6 +431,7 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
   const [form, setForm] = useState({
     ticketTypeId: '', businessUnitId: '', useCaseId: '',
     urgency: 'medium' as LiveOpsUrgency, description: '',
+    assigneeType: 'lo' as LiveOpsAssigneeType,
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -428,7 +453,7 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
       await api.liveops.createTicket({
         ticket_type_id: form.ticketTypeId, use_case_id: form.useCaseId,
         business_unit_id: form.businessUnitId, urgency: form.urgency,
-        description: form.description, submit: true,
+        description: form.description, assignee_type: form.assigneeType, submit: true,
       }, memberEmail)
       onSubmitted()
     } catch (e) {
@@ -517,6 +542,24 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
                 </div>
               </div>
 
+              <div>
+                <label className="block text-xs font-medium text-ink-muted mb-1.5">Assign To</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([['lo', 'LiveOps (LO)'], ['pe', 'Platform Engineering (PE)']] as const).map(([val, label]) => (
+                    <button key={val} onClick={() => setForm(f => ({ ...f, assigneeType: val }))}
+                      className={`py-2 px-3 rounded-lg border text-xs font-medium transition-all text-left ${
+                        form.assigneeType === val
+                          ? val === 'pe'
+                            ? 'bg-cyan-900/20 border-cyan-500/40 text-cyan-400'
+                            : 'bg-fuchsia-900/20 border-fuchsia-500/40 text-fuchsia-400'
+                          : 'bg-surface-1 border-hairline text-ink-subtle hover:border-primary/30 hover:text-ink-muted'
+                      }`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Approval routing preview — shown once type + BU are both selected */}
               {form.ticketTypeId && form.businessUnitId && (
                 <div className={`rounded-xl border px-4 py-3.5 ${approverConfig ? 'bg-primary/5 border-primary/20' : 'bg-amber-900/20 border-amber-500/20'}`}>
@@ -547,10 +590,14 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
                           <span className="text-xs text-ink-subtle italic">Not required</span>
                         )}
                       </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold text-ink-subtle w-28 flex-shrink-0">Final Approver</span>
+                        <span className="text-xs text-ink-muted">{form.assigneeType === 'pe' ? 'PE Manager' : 'LO Manager'}</span>
+                      </div>
                     </div>
                   ) : (
                     <p className="text-xs text-amber-400">
-                      No approval routing configured for this combination. Your ticket will go directly to the LO Manager.
+                      No approval routing configured for this combination. Your ticket will go directly to the {form.assigneeType === 'pe' ? 'PE Manager' : 'LO Manager'}.
                     </p>
                   )}
                 </div>
@@ -577,6 +624,7 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
                   ['Business Unit', selectedBU?.name],
                   ['Use Case', selectedUC?.name],
                   ['Urgency', form.urgency.charAt(0).toUpperCase() + form.urgency.slice(1)],
+                  ['Assign To', form.assigneeType === 'pe' ? 'Platform Engineering (PE)' : 'LiveOps (LO)'],
                 ].map(([label, value]) => (
                   <div key={label} className="flex justify-between px-4 py-2.5">
                     <span className="text-xs text-ink-muted">{label}</span>
@@ -592,7 +640,7 @@ function SubmitPanel({ onClose, onSubmitted, businessUnits, ticketTypes, useCase
               </div>
               <p className="text-[11px] text-ink-subtle flex items-center gap-1.5">
                 <ChevronRight size={11} />
-                On submit, this ticket will be routed to your Workstream Lead for approval.
+                On submit, this ticket will be routed to your Workstream Lead, then to the {form.assigneeType === 'pe' ? 'PE Manager' : 'LO Manager'} for final approval and assignment.
               </p>
               {error && <p className="text-xs text-red-400 bg-red-900/20 rounded-lg px-3 py-2">{error}</p>}
             </div>
@@ -812,11 +860,12 @@ interface DetailPanelProps {
   memberEmail: string
   memberId: string | null
   isLoManager: boolean
+  isPeManager: boolean
   isAdmin: boolean
   assignableMembers: LiveOpsAssignableMember[]
 }
 
-function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoManager, isAdmin, assignableMembers }: DetailPanelProps) {
+function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoManager, isPeManager, isAdmin, assignableMembers }: DetailPanelProps) {
   const [comment, setComment] = useState('')
   const [commentResolved, setCommentResolved] = useState('')
   const [postingComment, setPostingComment] = useState(false)
@@ -898,29 +947,40 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
     finally { setPostingComment(false) }
   }
 
+  const isManager = isLoManager || isPeManager || isAdmin
+  const isTicketManager = (
+    (localTicket.assigneeType === 'pe' && (isPeManager || isAdmin)) ||
+    (localTicket.assigneeType === 'lo' && (isLoManager || isAdmin))
+  )
+
   // ── determine which actions to show
   const canApprove = (
-    (localTicket.status === 'pending_wl' && (localTicket.workstreamLeadId === memberId || isAdmin)) ||
-    (localTicket.status === 'pending_tl' && (localTicket.teamLeadId === memberId || isAdmin)) ||
-    (localTicket.status === 'pending_lo' && isLoManager)
+    (localTicket.status === 'pending_wl' && (localTicket.workstreamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+    (localTicket.status === 'pending_tl' && (localTicket.teamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+    (localTicket.status === 'pending_lo' && (isLoManager || isAdmin)) ||
+    (localTicket.status === 'pending_pe' && (isPeManager || isAdmin))
   )
   const canPushBack = (
-    (localTicket.status === 'pending_wl' && (localTicket.workstreamLeadId === memberId || isAdmin)) ||
-    (localTicket.status === 'pending_tl' && (localTicket.teamLeadId === memberId || isAdmin))
+    (localTicket.status === 'pending_wl' && (localTicket.workstreamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+    (localTicket.status === 'pending_tl' && (localTicket.teamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+    (localTicket.status === 'pending_lo' && (isLoManager || isAdmin)) ||
+    (localTicket.status === 'pending_pe' && (isPeManager || isAdmin))
   )
   const hasActiveAssignment = localTicket.assignments.some(a => a.status === 'pending' || a.status === 'active')
-  const canAssign = isLoManager && ['open', 'in_progress'].includes(localTicket.status)
-  const canReassign = isLoManager && localTicket.status === 'in_progress' && hasActiveAssignment
-  const canHold = isLoManager && ['open', 'in_progress', 'pending_lo', 'pending_review'].includes(localTicket.status)
-  const canResume = isLoManager && localTicket.status === 'on_hold'
-  const canCancel = (isSubmitter || isLoManager) && !['completed', 'rejected', 'cancelled'].includes(localTicket.status)
+  const canAssign = isTicketManager && ['open', 'in_progress'].includes(localTicket.status)
+  const canReassign = isTicketManager && localTicket.status === 'in_progress' && hasActiveAssignment
+  const canHold = isTicketManager && ['open', 'in_progress', 'pending_lo', 'pending_pe', 'pending_review'].includes(localTicket.status)
+  const canResume = isTicketManager && localTicket.status === 'on_hold'
+  const canCancel = (isSubmitter || isManager) && !['completed', 'rejected', 'cancelled'].includes(localTicket.status)
   const canPickup = !!myActiveAssignment && myActiveAssignment.status === 'pending'
   const canComplete = !!myActiveAssignment && myActiveAssignment.status === 'active'
   const canRejectAssignment = !!myActiveAssignment
-  const isLoApproveStage = localTicket.status === 'pending_lo' && isLoManager
+  const isLoApproveStage = localTicket.status === 'pending_lo' && (isLoManager || isAdmin)
+  const isPeApproveStage = localTicket.status === 'pending_pe' && (isPeManager || isAdmin)
+  const isManagerApproveStage = isLoApproveStage || isPeApproveStage
   const canEditDraft = localTicket.status === 'draft' && isSubmitter
-  const canConfirmComplete = isLoManager && localTicket.status === 'pending_review'
-  const canOverrideUrgency = isLoManager && !['completed', 'rejected', 'cancelled'].includes(localTicket.status)
+  const canConfirmComplete = isTicketManager && localTicket.status === 'pending_review'
+  const canOverrideUrgency = isTicketManager && !['completed', 'rejected', 'cancelled'].includes(localTicket.status)
   const sla = slaStatus(localTicket.slaDeadline, localTicket.status)
   const nonSystemComments = localTicket.comments.filter(c => !c.isSystem)
 
@@ -935,6 +995,9 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
               <TicketNumberBadge n={localTicket.ticketNumber} />
               <UrgencyBadge urgency={localTicket.urgency} />
               <StatusBadge status={localTicket.status} />
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${localTicket.assigneeType === 'pe' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-fuchsia-500/10 text-fuchsia-400'}`}>
+                {localTicket.assigneeType === 'pe' ? 'PE' : 'LO'}
+              </span>
               {sla === 'breached' && (
                 <span className="text-[10px] font-semibold text-red-400 bg-red-900/20 px-1.5 py-0.5 rounded flex items-center gap-1">
                   <AlertOctagon size={9} /> {slaLabel(localTicket.slaDeadline)}
@@ -985,11 +1048,46 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
             <p className="text-xs text-ink-muted leading-relaxed whitespace-pre-wrap">{localTicket.description}</p>
           </div>
 
+          {/* Push-back banner — shown to submitter when ticket is draft due to push-back */}
+          {localTicket.status === 'draft' && localTicket.pushedBackFrom && (() => {
+            const pbf = localTicket.pushedBackFrom!
+            const actorName =
+              pbf === 'wl' ? localTicket.wlActorName :
+              pbf === 'tl' ? localTicket.tlActorName :
+              pbf === 'lo' ? localTicket.loActorName :
+                             localTicket.peActorName
+            const reason =
+              pbf === 'wl' ? localTicket.wlReason :
+              pbf === 'tl' ? localTicket.tlReason :
+              pbf === 'lo' ? localTicket.loReason :
+                             localTicket.peReason
+            const stageLabel =
+              pbf === 'wl' ? 'Workstream Lead' :
+              pbf === 'tl' ? 'Team Lead' :
+              pbf === 'lo' ? 'LO Manager' :
+                             'PE Manager'
+            return (
+              <div className="px-6 py-4 border-b border-hairline bg-amber-900/20">
+                <div className="flex items-start gap-2">
+                  <CornerDownLeft size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-semibold text-amber-400 uppercase tracking-widest mb-1">Pushed Back — Action Required</p>
+                    <p className="text-xs text-amber-300 leading-relaxed">
+                      <span className="font-medium">{actorName ?? stageLabel}</span> ({stageLabel}) pushed this ticket back.
+                      {reason && <> Reason: <span className="italic">&ldquo;{reason}&rdquo;</span></>}
+                    </p>
+                    <p className="text-[10px] text-amber-400/70 mt-1.5">Update the description and resubmit — approval will resume from this stage.</p>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
           {/* Rejection / cancellation reason */}
-          {localTicket.status === 'rejected' && (localTicket.wlReason || localTicket.tlReason || localTicket.loReason) && (
+          {localTicket.status === 'rejected' && (localTicket.wlReason || localTicket.tlReason || localTicket.loReason || localTicket.peReason) && (
             <div className="px-6 py-4 border-b border-hairline bg-red-900/20">
               <p className="text-[10px] font-semibold text-red-500 uppercase tracking-widest mb-1">Rejection Reason</p>
-              <p className="text-xs text-red-400">{localTicket.wlReason ?? localTicket.tlReason ?? localTicket.loReason}</p>
+              <p className="text-xs text-red-400">{localTicket.wlReason ?? localTicket.tlReason ?? localTicket.loReason ?? localTicket.peReason}</p>
             </div>
           )}
           {localTicket.status === 'cancelled' && localTicket.cancelReason && (
@@ -1127,7 +1225,7 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                   )
                 )}
 
-                {canApprove && !isLoApproveStage && (
+                {canApprove && !isManagerApproveStage && (
                   <button onClick={() => runAction(() => api.liveops.approve(localTicket.id, null, memberEmail), 'approve')}
                     disabled={!!loadingAction}
                     className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50">
@@ -1135,12 +1233,16 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                   </button>
                 )}
 
-                {isLoApproveStage && (
-                  showLoApproveBox ? (
+                {isManagerApproveStage && (() => {
+                  const teamFilter = localTicket.assigneeType === 'pe' ? 'pe' : 'liveops'
+                  const filteredAssignees = assignableMembers.filter(m => m.teamId === teamFilter)
+                  const managerLabel = localTicket.assigneeType === 'pe' ? 'PE Manager' : 'LO Manager'
+                  const actionKey = localTicket.assigneeType === 'pe' ? 'approve-pe' : 'approve-lo'
+                  return showLoApproveBox ? (
                     <div className="space-y-2">
-                      <p className="text-[10px] font-semibold text-ink-subtle uppercase tracking-widest">Approve &amp; Assign Engineers</p>
+                      <p className="text-[10px] font-semibold text-ink-subtle uppercase tracking-widest">Approve &amp; Assign Engineers ({managerLabel})</p>
                       <div className="border border-hairline rounded-lg bg-surface-2 divide-y divide-hairline max-h-44 overflow-y-auto">
-                        {assignableMembers.map(m => {
+                        {filteredAssignees.map(m => {
                           const checked = loApproveAssigneeIds.includes(m.id)
                           return (
                             <label key={m.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface-3 select-none">
@@ -1152,6 +1254,9 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                             </label>
                           )
                         })}
+                        {filteredAssignees.length === 0 && (
+                          <p className="text-xs text-ink-subtle px-3 py-3 text-center">No {teamFilter === 'pe' ? 'PE' : 'LO'} engineers available</p>
+                        )}
                       </div>
                       <input value={loApproveNote} onChange={e => setLoApproveNote(e.target.value)}
                         placeholder="Optional message for engineers…"
@@ -1162,10 +1267,10 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                         <button onClick={() => runAction(() => {
                           setShowLoApproveBox(false)
                           return api.liveops.approve(localTicket.id, null, memberEmail, loApproveAssigneeIds, loApproveNote || null)
-                        }, 'approve-lo')}
+                        }, actionKey)}
                           disabled={loApproveAssigneeIds.length === 0 || !!loadingAction}
                           className="flex-1 py-2 text-xs font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5">
-                          {loadingAction === 'approve-lo' ? <>{spin} Approving…</> : `Approve & Assign${loApproveAssigneeIds.length > 1 ? ` (${loApproveAssigneeIds.length})` : ''}`}</button>
+                          {loadingAction === actionKey ? <>{spin} Approving…</> : `Approve & Assign${loApproveAssigneeIds.length > 1 ? ` (${loApproveAssigneeIds.length})` : ''}`}</button>
                       </div>
                     </div>
                   ) : (
@@ -1174,7 +1279,7 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                       <Check size={14} /> Approve &amp; Assign
                     </button>
                   )
-                )}
+                })()}
 
                 {canPickup && (
                   <button onClick={() => runAction(() => api.liveops.pickup(localTicket.id, memberEmail), 'pickup')}
@@ -1315,7 +1420,7 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                       {hasActiveAssignment ? 'Add Engineers' : 'Assign Engineers'}
                     </p>
                     <div className="border border-hairline rounded-lg bg-surface-2 divide-y divide-hairline max-h-44 overflow-y-auto">
-                      {assignableMembers.map(m => {
+                      {assignableMembers.filter(m => m.teamId === (localTicket.assigneeType === 'pe' ? 'pe' : 'liveops')).map(m => {
                         const alreadyActive = localTicket.assignments.some(a => a.assigneeId === m.id && (a.status === 'pending' || a.status === 'active'))
                         const checked = assigneeIds.includes(m.id)
                         return (
@@ -1350,7 +1455,7 @@ function DetailPanel({ ticket, onClose, onAction, memberEmail, memberId, isLoMan
                     <select value={reassigneeId} onChange={e => setReassigneeId(e.target.value)}
                       className="w-full text-xs border border-hairline rounded-lg px-3 py-2 bg-surface-1 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary text-ink">
                       <option value="">Select Engineer…</option>
-                      {assignableMembers.map(m => (
+                      {assignableMembers.filter(m => m.teamId === (localTicket.assigneeType === 'pe' ? 'pe' : 'liveops')).map(m => (
                         <option key={m.id} value={m.id}>{m.name} ({m.activeAssignmentCount} active)</option>
                       ))}
                     </select>
@@ -1613,6 +1718,7 @@ export default function LiveOps() {
   }, [memberRoles, memberId])
 
   const isLoManager = currentUser?.teamId === 'liveops' && ['lead', 'head'].includes(currentUser?.role ?? '')
+  const isPeManager = currentUser?.teamId === 'pe' && ['lead', 'head'].includes(currentUser?.role ?? '')
   const isAdmin = currentUser?.role === 'admin' || !!(currentUser?.hasAdminAccess)
 
   // Visible tabs
@@ -1620,18 +1726,18 @@ export default function LiveOps() {
     const result: Array<{ id: TabId; label: string; count?: number }> = [
       { id: 'my-tickets', label: 'My Tickets', count: myTickets.filter(t => !['completed', 'cancelled', 'rejected'].includes(t.status)).length || undefined },
     ]
-    if (myRoles.has('workstream_lead') || myRoles.has('team_lead') || isLoManager || isAdmin) {
+    if (myRoles.has('workstream_lead') || myRoles.has('team_lead') || isLoManager || isPeManager || isAdmin) {
       result.push({ id: 'approvals', label: 'Approvals', count: approvalTickets.length || undefined })
     }
     if (currentUser?.teamId === 'pe' || currentUser?.teamId === 'liveops' || isAdmin) {
       result.push({ id: 'my-work', label: 'My Work', count: myWorkTickets.length || undefined })
     }
-    if (isAdmin || isLoManager) {
+    if (isAdmin || isLoManager || isPeManager) {
       result.push({ id: 'all-tickets', label: 'All Tickets' })
       result.push({ id: 'admin', label: 'Admin' })
     }
     return result
-  }, [myRoles, myTickets, approvalTickets, myWorkTickets, isAdmin, isLoManager, currentUser])
+  }, [myRoles, myTickets, approvalTickets, myWorkTickets, isAdmin, isLoManager, isPeManager, currentUser])
 
   // Load lookup tables on mount — no auth required for any of these
   const loadInitial = useCallback(async () => {
@@ -1660,9 +1766,10 @@ export default function LiveOps() {
     } else if (tab === 'approvals') {
       const pending = await api.liveops.listTickets()
       const mine = pending.filter(t =>
-        (t.status === 'pending_wl' && (t.workstreamLeadId === memberId || isAdmin)) ||
-        (t.status === 'pending_tl' && (t.teamLeadId === memberId || isAdmin)) ||
-        (t.status === 'pending_lo' && (isLoManager || isAdmin))
+        (t.status === 'pending_wl' && (t.workstreamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+        (t.status === 'pending_tl' && (t.teamLeadId === memberId || isAdmin || isLoManager || isPeManager)) ||
+        (t.status === 'pending_lo' && (isLoManager || isAdmin)) ||
+        (t.status === 'pending_pe' && (isPeManager || isAdmin))
       )
       setApprovalTickets(mine)
     } else if (tab === 'my-work') {
@@ -1684,7 +1791,7 @@ export default function LiveOps() {
       const members = await api.settings.getMembers().catch(() => [])
       setTeamMembers(members.map((m: { id: string; name: string }) => ({ id: m.id, name: m.name })))
     }
-  }, [memberEmail, memberId, myRoles, isAdmin, isLoManager])
+  }, [memberEmail, memberId, myRoles, isAdmin, isLoManager, isPeManager])
 
   useEffect(() => { loadInitial() }, [loadInitial])
   useEffect(() => {
@@ -2178,7 +2285,8 @@ export default function LiveOps() {
           onAction={handleAction}
           memberEmail={memberEmail}
           memberId={memberId}
-          isLoManager={isLoManager || isAdmin}
+          isLoManager={isLoManager}
+          isPeManager={isPeManager}
           isAdmin={isAdmin}
           assignableMembers={assignableMembers}
         />

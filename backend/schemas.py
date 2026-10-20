@@ -858,6 +858,7 @@ class LiveOpsTicketCreate(BaseModel):
     business_unit_id: str
     urgency: str          # low | medium | high
     description: str
+    assignee_type: str = "lo"  # lo | pe
     submit: bool = False  # True = create and immediately submit (skip draft)
 
 
@@ -943,6 +944,7 @@ class LiveOpsTicketListItem(BaseModel):
     business_unit_id: str = ""
     business_unit_name: str = ""
     urgency: str
+    assignee_type: str = "lo"
     status: str
     submitted_by_id: str = ""
     submitted_by_name: str = ""
@@ -955,6 +957,8 @@ class LiveOpsTicketListItem(BaseModel):
     wl_status: str = "pending"
     tl_status: str = "pending"
     lo_status: str = "pending"
+    pe_status: str = "pending"
+    pushed_back_from: Optional[str] = None
     submitted_at: Optional[datetime]
     sla_deadline: Optional[datetime]
     created_at: datetime
@@ -1000,6 +1004,10 @@ class LiveOpsTicketDetail(LiveOpsTicketListItem):
     lo_actor_name: str = ""
     lo_acted_at: Optional[datetime]
     lo_reason: Optional[str]
+    pe_status: str = "pending"
+    pe_actor_name: str = ""
+    pe_acted_at: Optional[datetime]
+    pe_reason: Optional[str]
     cancelled_by_name: str = ""
     cancelled_at: Optional[datetime]
     cancel_reason: Optional[str]
@@ -1019,10 +1027,12 @@ class LiveOpsTicketDetail(LiveOpsTicketListItem):
             wla = getattr(obj, "wl_actor",     None)
             tla = getattr(obj, "tl_actor",     None)
             loa = getattr(obj, "lo_actor",     None)
+            pea = getattr(obj, "pe_actor",     None)
             cb  = getattr(obj, "cancelled_by", None)
             obj.__dict__.setdefault("wl_actor_name",     wla.name if wla else "")
             obj.__dict__.setdefault("tl_actor_name",     tla.name if tla else "")
             obj.__dict__.setdefault("lo_actor_name",     loa.name if loa else "")
+            obj.__dict__.setdefault("pe_actor_name",     pea.name if pea else "")
             obj.__dict__.setdefault("cancelled_by_name", cb.name  if cb  else "")
         return obj
 
@@ -1091,6 +1101,7 @@ class LiveOpsOverrideUrgencyBody(BaseModel):
 class LiveOpsAssignableMember(BaseModel):
     id: str
     name: str
+    team_id: str = ""
     active_assignment_count: int = 0
     model_config = {"from_attributes": True}
 

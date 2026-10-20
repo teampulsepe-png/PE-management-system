@@ -364,8 +364,9 @@ export interface CostSummary {
 
 export type LiveOpsUrgency = 'high' | 'medium' | 'low'
 export type LiveOpsTicketStatus =
-  | 'draft' | 'pending_wl' | 'pending_tl' | 'pending_lo'
+  | 'draft' | 'pending_wl' | 'pending_tl' | 'pending_lo' | 'pending_pe'
   | 'open' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'on_hold' | 'pending_review'
+export type LiveOpsAssigneeType = 'lo' | 'pe'
 export type LiveOpsApprovalStatus = 'pending' | 'approved' | 'rejected' | 'pushed_back' | 'na'
 export type LiveOpsMemberRoleType = 'workstream_lead' | 'team_lead'
 export type LiveOpsAssignmentStatus = 'pending' | 'active' | 'completed' | 'rejected'
@@ -412,6 +413,7 @@ export interface LiveOpsTicketListItem {
   useCaseId: string; useCaseName: string
   businessUnitId: string; businessUnitName: string
   urgency: LiveOpsUrgency
+  assigneeType: LiveOpsAssigneeType
   submittedById: string; submittedByName: string
   submittedAt: string | null; slaDeadline: string | null
   workstreamLeadId: string | null; workstreamLeadName: string | null
@@ -421,6 +423,8 @@ export interface LiveOpsTicketListItem {
   wlStatus: LiveOpsApprovalStatus
   tlStatus: LiveOpsApprovalStatus
   loStatus: LiveOpsApprovalStatus
+  peStatus: LiveOpsApprovalStatus
+  pushedBackFrom: 'wl' | 'tl' | 'lo' | 'pe' | null
   createdAt: string; updatedAt: string
 }
 
@@ -429,6 +433,7 @@ export interface LiveOpsTicketDetail extends LiveOpsTicketListItem {
   wlActorId: string | null; wlActorName: string | null; wlActedAt: string | null; wlReason: string | null
   tlActorId: string | null; tlActorName: string | null; tlActedAt: string | null; tlReason: string | null
   loActorId: string | null; loActorName: string | null; loActedAt: string | null; loReason: string | null
+  peActorId: string | null; peActorName: string | null; peActedAt: string | null; peReason: string | null
   cancelledById: string | null; cancelledByName: string | null; cancelledAt: string | null; cancelReason: string | null
   onHoldReason: string | null; putOnHoldAt: string | null; completedAt: string | null
   assignments: LiveOpsAssignment[]
@@ -436,7 +441,7 @@ export interface LiveOpsTicketDetail extends LiveOpsTicketListItem {
   events: LiveOpsEvent[]
 }
 
-export interface LiveOpsAssignableMember { id: string; name: string; activeAssignmentCount: number }
+export interface LiveOpsAssignableMember { id: string; name: string; teamId: string; activeAssignmentCount: number }
 
 export interface LiveOpsAnalyticsSummary {
   totalOpen: number; pendingApproval: number; inProgress: number

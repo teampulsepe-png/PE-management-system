@@ -869,6 +869,7 @@ export const api = {
         useCaseId: (t.use_case_id as string) ?? '', useCaseName: (t.use_case_name as string) ?? '',
         businessUnitId: (t.business_unit_id as string) ?? '', businessUnitName: (t.business_unit_name as string) ?? '',
         urgency: t.urgency as LiveOpsTicketListItem['urgency'],
+        assigneeType: ((t.assignee_type as string) ?? 'lo') as LiveOpsTicketListItem['assigneeType'],
         submittedById: (t.submitted_by_id as string) ?? '', submittedByName: (t.submitted_by_name as string) ?? '',
         submittedAt: t.submitted_at as string | null, slaDeadline: t.sla_deadline as string | null,
         workstreamLeadId: t.workstream_lead_id as string | null, workstreamLeadName: (t.workstream_lead_name as string) ?? '',
@@ -878,6 +879,8 @@ export const api = {
         wlStatus: (t.wl_status as LiveOpsTicketListItem['wlStatus']) ?? 'pending',
         tlStatus: (t.tl_status as LiveOpsTicketListItem['tlStatus']) ?? 'pending',
         loStatus: (t.lo_status as LiveOpsTicketListItem['loStatus']) ?? 'pending',
+        peStatus: (t.pe_status as LiveOpsTicketListItem['peStatus']) ?? 'pending',
+        pushedBackFrom: (t.pushed_back_from as LiveOpsTicketListItem['pushedBackFrom']) ?? null,
         createdAt: t.created_at as string, updatedAt: (t.updated_at as string) ?? (t.created_at as string),
       }
     },
@@ -912,6 +915,8 @@ export const api = {
         tlActedAt: t.tl_acted_at as string | null, tlReason: t.tl_reason as string | null,
         loActorId: t.lo_actor_id as string | null, loActorName: t.lo_actor_name as string | null,
         loActedAt: t.lo_acted_at as string | null, loReason: t.lo_reason as string | null,
+        peActorId: t.pe_actor_id as string | null, peActorName: t.pe_actor_name as string | null,
+        peActedAt: t.pe_acted_at as string | null, peReason: t.pe_reason as string | null,
         cancelledById: t.cancelled_by_id as string | null, cancelledByName: t.cancelled_by_name as string | null,
         cancelledAt: t.cancelled_at as string | null, cancelReason: t.cancel_reason as string | null,
         onHoldReason: t.on_hold_reason as string | null, putOnHoldAt: t.put_on_hold_at as string | null,
@@ -942,7 +947,7 @@ export const api = {
 
     async getAssignableMembers(): Promise<LiveOpsAssignableMember[]> {
       const d = await request<Array<Record<string, unknown>>>('/liveops/assignable-members')
-      return d.map(m => ({ id: m.id as string, name: m.name as string, activeAssignmentCount: m.active_assignment_count as number }))
+      return d.map(m => ({ id: m.id as string, name: m.name as string, teamId: (m.team_id as string) ?? '', activeAssignmentCount: m.active_assignment_count as number }))
     },
 
     // ── tickets ───────────────────────────────────────────────────────────────
@@ -967,7 +972,7 @@ export const api = {
       return (api.liveops as any)._mapDetail(d)
     },
 
-    async createTicket(body: { ticket_type_id: string; use_case_id: string; business_unit_id: string; urgency: string; description: string; submit: boolean }, memberEmail: string): Promise<LiveOpsTicketDetail> {
+    async createTicket(body: { ticket_type_id: string; use_case_id: string; business_unit_id: string; urgency: string; description: string; assignee_type?: string; submit: boolean }, memberEmail: string): Promise<LiveOpsTicketDetail> {
       const d = await request<Record<string, unknown>>(`/liveops/tickets?member_email=${encodeURIComponent(memberEmail)}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       })

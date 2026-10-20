@@ -93,6 +93,7 @@ def _load_ticket(db: Session, ticket_id: str) -> LiveOpsTicket:
             joinedload(LiveOpsTicket.wl_actor),
             joinedload(LiveOpsTicket.tl_actor),
             joinedload(LiveOpsTicket.lo_actor),
+            joinedload(LiveOpsTicket.pe_actor),
             joinedload(LiveOpsTicket.currently_with),
             joinedload(LiveOpsTicket.cancelled_by),
             joinedload(LiveOpsTicket.assignments).joinedload(LiveOpsAssignment.assignee),
@@ -127,6 +128,16 @@ def _is_lo_manager(member: TeamMember) -> bool:
         return False
 
 
+def _is_pe_manager(member: TeamMember) -> bool:
+    """PE Manager = PE team member with lead or head role."""
+    if member.team_id != 'pe':
+        return False
+    try:
+        return member.role is not None and member.role.name in ('lead', 'head')
+    except Exception:
+        return False
+
+
 def _is_assignable_engineer(assignee: TeamMember) -> bool:
     """Assignable engineer = PE or LiveOps team member."""
     return assignee.team_id in ('pe', 'liveops')
@@ -141,6 +152,24 @@ def _lo_manager_id(db: Session) -> Optional[str]:
         .first()
     )
     return member.id if member else None
+
+
+def _pe_manager_id(db: Session) -> Optional[str]:
+    """Returns the first PE Manager member ID (PE team lead/head), or None."""
+    member = (
+        db.query(TeamMember)
+        .join(Role, TeamMember.role_id == Role.id)
+        .filter(TeamMember.team_id == 'pe', Role.name.in_(['lead', 'head']))
+        .first()
+    )
+    return member.id if member else None
+
+
+def _manager_id_for_ticket(db: Session, ticket) -> Optional[str]:
+    """Returns the appropriate manager ID based on ticket assignee_type."""
+    if ticket.assignee_type == 'pe':
+        return _pe_manager_id(db)
+    return _lo_manager_id(db)
 
 
 def _notify(
@@ -341,6 +370,7 @@ def assignable_members(db: Session = Depends(get_db)):
         LiveOpsAssignableMember(
             id=m.id,
             name=m.name,
+            team_id=m.team_id or "",
             active_assignment_count=active_counts.get(m.id, 0),
         )
         for m in sorted(members, key=lambda x: x.name)
@@ -423,6 +453,8 @@ def create_ticket(body: LiveOpsTicketCreate, member_email: str, db: Session = De
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
+    if body.assignee_type not in ("lo", "pe"):
+        raise HTTPException(status_code=422, detail="assignee_type must be 'lo' or 'pe'")
     number = _next_ticket_number(db)
     ticket = LiveOpsTicket(
         id=str(uuid.uuid4()),
@@ -432,6 +464,7 @@ def create_ticket(body: LiveOpsTicketCreate, member_email: str, db: Session = De
         business_unit_id=body.business_unit_id,
         urgency=body.urgency,
         description=body.description,
+        assignee_type=body.assignee_type,
         submitted_by_id=member.id,
         status="draft",
     )
@@ -469,7 +502,11 @@ def submit_ticket(ticket_id: str, member_email: str, db: Session = Depends(get_d
 
 
 def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[tuple[str, str]]:
-    """Shared logic for first-time submission and re-submission after push back."""
+    """Shared logic for first-time submission and re-submission after push back.
+
+    When pushed_back_from is set, skips already-approved stages and routes
+    directly back to the stage that requested more information.
+    """
     cfg = db.query(LiveOpsApproverConfig).filter_by(
         ticket_type_id=ticket.ticket_type_id,
         business_unit_id=ticket.business_unit_id,
@@ -478,7 +515,91 @@ def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[t
     ticket.workstream_lead_id = cfg.workstream_lead_id if cfg else None
     ticket.team_lead_id       = cfg.team_lead_id if cfg else None
 
-    # Reset per-stage audit for re-submission
+    ticket.submitted_at = _now()
+    ticket.sla_deadline = _sla_deadline(db, ticket.urgency)
+
+    # Consume and clear pushed_back_from — it determines routing for this resubmit
+    pushed_back_from = ticket.pushed_back_from
+    ticket.pushed_back_from = None
+
+    pushes: list[tuple[str, str]] = []
+    num = ticket.ticket_number
+    is_pe = ticket.assignee_type == 'pe'
+
+    # ── Resume from TL stage (WL already approved) ───────────────────────────
+    if pushed_back_from == 'tl':
+        # WL approval is preserved; only reset TL and downstream manager
+        ticket.tl_status   = "pending"
+        ticket.tl_actor_id = None
+        ticket.tl_acted_at = None
+        ticket.tl_reason   = None
+        if is_pe:
+            ticket.pe_status = "pending"; ticket.pe_actor_id = None; ticket.pe_acted_at = None; ticket.pe_reason = None
+        else:
+            ticket.lo_status = "pending"; ticket.lo_actor_id = None; ticket.lo_acted_at = None; ticket.lo_reason = None
+        ticket.status = "pending_tl"
+        ticket.currently_with_id = ticket.team_lead_id
+        _event(db, ticket.id, member.id, "resubmitted", {"from_pushback": "tl"})
+        _system_comment(db, ticket.id,
+            f"Resubmitted by {member.name} with updated details. Resuming from Team Lead.")
+        n = _notify(db, ticket.team_lead_id, "liveops_ticket",
+                    f"LO-{num:04d} resubmitted by {member.name} — please re-review",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+        if n: pushes.append(n)
+        # Notify WL so they know it came back into the chain
+        n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
+                    f"LO-{num:04d} was resubmitted by {member.name} after your Team Lead pushed it back",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+        if n: pushes.append(n)
+        return pushes
+
+    # ── Resume from LO Manager stage (WL + TL already approved) ──────────────
+    if pushed_back_from == 'lo':
+        ticket.lo_status   = "pending"
+        ticket.lo_actor_id = None
+        ticket.lo_acted_at = None
+        ticket.lo_reason   = None
+        lo_id = _lo_manager_id(db)
+        ticket.status = "pending_lo"
+        ticket.currently_with_id = lo_id
+        _event(db, ticket.id, member.id, "resubmitted", {"from_pushback": "lo"})
+        _system_comment(db, ticket.id,
+            f"Resubmitted by {member.name} with updated details. Resuming from LO Manager.")
+        n = _notify(db, lo_id, "liveops_ticket",
+                    f"LO-{num:04d} resubmitted by {member.name} — please re-review",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+        if n: pushes.append(n)
+        for prior_id in filter(None, [ticket.workstream_lead_id, ticket.team_lead_id]):
+            n = _notify(db, prior_id, "liveops_ticket",
+                        f"LO-{num:04d} was resubmitted by {member.name} after LO Manager push-back",
+                        member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+            if n: pushes.append(n)
+        return pushes
+
+    # ── Resume from PE Manager stage (WL + TL already approved) ──────────────
+    if pushed_back_from == 'pe':
+        ticket.pe_status   = "pending"
+        ticket.pe_actor_id = None
+        ticket.pe_acted_at = None
+        ticket.pe_reason   = None
+        pe_id = _pe_manager_id(db)
+        ticket.status = "pending_pe"
+        ticket.currently_with_id = pe_id
+        _event(db, ticket.id, member.id, "resubmitted", {"from_pushback": "pe"})
+        _system_comment(db, ticket.id,
+            f"Resubmitted by {member.name} with updated details. Resuming from PE Manager.")
+        n = _notify(db, pe_id, "liveops_ticket",
+                    f"LO-{num:04d} resubmitted by {member.name} — please re-review",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+        if n: pushes.append(n)
+        for prior_id in filter(None, [ticket.workstream_lead_id, ticket.team_lead_id]):
+            n = _notify(db, prior_id, "liveops_ticket",
+                        f"LO-{num:04d} was resubmitted by {member.name} after PE Manager push-back",
+                        member.name, entity_type="liveops_ticket", entity_id=ticket.id)
+            if n: pushes.append(n)
+        return pushes
+
+    # ── Full reset (first submission or WL push-back) ─────────────────────────
     ticket.wl_status   = "pending"
     ticket.wl_actor_id = None
     ticket.wl_acted_at = None
@@ -494,10 +615,10 @@ def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[t
     ticket.lo_acted_at = None
     ticket.lo_reason   = None
 
-    ticket.submitted_at = _now()
-    ticket.sla_deadline = _sla_deadline(db, ticket.urgency)
-
-    pushes = []
+    ticket.pe_status   = "pending"
+    ticket.pe_actor_id = None
+    ticket.pe_acted_at = None
+    ticket.pe_reason   = None
 
     if ticket.workstream_lead_id:
         ticket.status = "pending_wl"
@@ -505,24 +626,33 @@ def _do_submit(db: Session, ticket: LiveOpsTicket, member: TeamMember) -> list[t
         _event(db, ticket.id, member.id, "submitted", {
             "workstream_lead_id": ticket.workstream_lead_id,
             "team_lead_id": ticket.team_lead_id,
+            "assignee_type": ticket.assignee_type,
         })
         _system_comment(db, ticket.id, f"Ticket submitted by {member.name}.")
         n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} needs your approval — submitted by {member.name}",
+                    f"LO-{num:04d} needs your approval — submitted by {member.name}",
                     member.name, entity_type="liveops_ticket", entity_id=ticket.id)
         if n: pushes.append(n)
     else:
-        # No WL assigned — skip approval chain and go straight to LO Manager
+        # No WL — route straight to the appropriate manager
         ticket.wl_status = "na"
         ticket.tl_status = "na"
-        ticket.status = "pending_lo"
-        lo_id = _lo_manager_id(db)
-        ticket.currently_with_id = lo_id
-        _event(db, ticket.id, member.id, "submitted_direct_lo", {})
+        if is_pe:
+            ticket.lo_status = "na"
+            ticket.status = "pending_pe"
+            mgr_id = _pe_manager_id(db)
+            mgr_label = "PE Manager"
+        else:
+            ticket.pe_status = "na"
+            ticket.status = "pending_lo"
+            mgr_id = _lo_manager_id(db)
+            mgr_label = "LO Manager"
+        ticket.currently_with_id = mgr_id
+        _event(db, ticket.id, member.id, f"submitted_direct_{ticket.assignee_type}", {})
         _system_comment(db, ticket.id,
-            f"Ticket submitted by {member.name}. No approver configured — forwarded directly to LO Manager.")
-        n = _notify(db, lo_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} submitted by {member.name} — no WL configured, needs your decision",
+            f"Ticket submitted by {member.name}. No approver configured — forwarded directly to {mgr_label}.")
+        n = _notify(db, mgr_id, "liveops_ticket",
+                    f"LO-{num:04d} submitted by {member.name} — no WL configured, needs your decision",
                     member.name, entity_type="liveops_ticket", entity_id=ticket.id)
         if n: pushes.append(n)
 
@@ -568,11 +698,12 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
 
     is_admin = _is_system_admin(member)
     is_lo_or_admin = _is_lo_manager(member) or is_admin
+    is_pe_or_admin = _is_pe_manager(member) or is_admin
     now = _now()
     pushes: list[tuple[str, str]] = []
 
     if ticket.status == "pending_wl":
-        if ticket.workstream_lead_id != member.id and not is_lo_or_admin:
+        if ticket.workstream_lead_id != member.id and not is_lo_or_admin and not is_pe_or_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Workstream Lead")
         ticket.wl_status   = "approved"
         ticket.wl_actor_id = member.id
@@ -580,12 +711,23 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
         ticket.wl_reason   = body.reason
 
         if ticket.tl_status == "na":
-            lo_id = _lo_manager_id(db)
-            ticket.status = "pending_lo"
-            ticket.currently_with_id = lo_id
-            _event(db, ticket.id, member.id, "wl_approved", {"reason": body.reason, "next": "pending_lo"})
-            _system_comment(db, ticket.id, f"Approved by Workstream Lead {member.name}. Forwarded to LO Manager.")
-            n = _notify(db, lo_id, "liveops_ticket",
+            # No TL — route directly to the appropriate manager
+            is_pe = ticket.assignee_type == 'pe'
+            if is_pe:
+                ticket.lo_status = "na"
+                next_status = "pending_pe"
+                mgr_id = _pe_manager_id(db)
+                mgr_label = "PE Manager"
+            else:
+                ticket.pe_status = "na"
+                next_status = "pending_lo"
+                mgr_id = _lo_manager_id(db)
+                mgr_label = "LO Manager"
+            ticket.status = next_status
+            ticket.currently_with_id = mgr_id
+            _event(db, ticket.id, member.id, "wl_approved", {"reason": body.reason, "next": next_status})
+            _system_comment(db, ticket.id, f"Approved by Workstream Lead {member.name}. Forwarded to {mgr_label}.")
+            n = _notify(db, mgr_id, "liveops_ticket",
                         f"LO-{ticket.ticket_number:04d} approved by WL and awaiting your review", member.name,
                         entity_type="liveops_ticket", entity_id=ticket_id)
             if n: pushes.append(n)
@@ -600,18 +742,29 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
             if n: pushes.append(n)
 
     elif ticket.status == "pending_tl":
-        if ticket.team_lead_id != member.id and not is_lo_or_admin:
+        if ticket.team_lead_id != member.id and not is_lo_or_admin and not is_pe_or_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Team Lead")
-        lo_id = _lo_manager_id(db)
         ticket.tl_status   = "approved"
         ticket.tl_actor_id = member.id
         ticket.tl_acted_at = now
         ticket.tl_reason   = body.reason
-        ticket.status = "pending_lo"
-        ticket.currently_with_id = lo_id
-        _event(db, ticket.id, member.id, "tl_approved", {"reason": body.reason})
-        _system_comment(db, ticket.id, f"Approved by Team Lead {member.name}. Forwarded to LO Manager.")
-        n = _notify(db, lo_id, "liveops_ticket",
+
+        is_pe = ticket.assignee_type == 'pe'
+        if is_pe:
+            ticket.lo_status = "na"
+            next_status = "pending_pe"
+            mgr_id = _pe_manager_id(db)
+            mgr_label = "PE Manager"
+        else:
+            ticket.pe_status = "na"
+            next_status = "pending_lo"
+            mgr_id = _lo_manager_id(db)
+            mgr_label = "LO Manager"
+        ticket.status = next_status
+        ticket.currently_with_id = mgr_id
+        _event(db, ticket.id, member.id, "tl_approved", {"reason": body.reason, "next": next_status})
+        _system_comment(db, ticket.id, f"Approved by Team Lead {member.name}. Forwarded to {mgr_label}.")
+        n = _notify(db, mgr_id, "liveops_ticket",
                     f"LO-{ticket.ticket_number:04d} fully approved and awaiting your decision", member.name,
                     entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
@@ -627,8 +780,8 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
             assignee = db.query(TeamMember).filter_by(id=aid).first()
             if not assignee:
                 raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
-            if not _is_assignable_engineer(assignee):
-                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a PE or LiveOps team member")
+            if assignee.team_id != 'liveops':
+                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a LiveOps team member")
             assignees.append(assignee)
 
         ticket.lo_status   = "approved"
@@ -664,6 +817,54 @@ def approve_ticket(ticket_id: str, body: LiveOpsApproveBody, member_email: str, 
         })
         _system_comment(db, ticket.id, f"Approved by LO Manager {member.name}. Assigned to {names_str}.")
 
+    elif ticket.status == "pending_pe":
+        if not is_pe_or_admin:
+            raise HTTPException(status_code=403, detail="Only PE Manager can approve at this stage")
+        if not body.assignee_ids:
+            raise HTTPException(status_code=422, detail="assignee_ids is required when approving at PE stage")
+
+        assignees = []
+        for aid in body.assignee_ids:
+            assignee = db.query(TeamMember).filter_by(id=aid).first()
+            if not assignee:
+                raise HTTPException(status_code=404, detail=f"Assignee {aid} not found")
+            if assignee.team_id != 'pe':
+                raise HTTPException(status_code=422, detail=f"{assignee.name} must be a PE team member")
+            assignees.append(assignee)
+
+        ticket.pe_status   = "approved"
+        ticket.pe_actor_id = member.id
+        ticket.pe_acted_at = now
+        ticket.pe_reason   = body.reason
+        ticket.status      = "open"
+        ticket.currently_with_id = body.assignee_ids[0]
+
+        assignee_names = []
+        for assignee in assignees:
+            db.add(LiveOpsAssignment(
+                id=str(uuid.uuid4()),
+                ticket_id=ticket_id,
+                assignee_id=assignee.id,
+                assigned_by_id=member.id,
+                lo_message=body.lo_message,
+                status="pending",
+            ))
+            assignee_names.append(assignee.name)
+            msg = f"LO-{ticket.ticket_number:04d} has been assigned to you"
+            if body.lo_message:
+                msg += f" — {body.lo_message}"
+            n = _notify(db, assignee.id, "liveops_ticket", msg, member.name,
+                        entity_type="liveops_ticket", entity_id=ticket_id)
+            if n: pushes.append(n)
+
+        names_str = ", ".join(assignee_names)
+        _event(db, ticket.id, member.id, "pe_approved_and_assigned", {
+            "reason": body.reason,
+            "assignee_ids": body.assignee_ids,
+            "assignee_names": assignee_names,
+        })
+        _system_comment(db, ticket.id, f"Approved by PE Manager {member.name}. Assigned to {names_str}.")
+
     else:
         raise HTTPException(status_code=409, detail=f"Ticket cannot be approved in status '{ticket.status}'")
 
@@ -689,43 +890,98 @@ def push_back_ticket(ticket_id: str, body: LiveOpsPushBackBody, member_email: st
     now = _now()
     pushes: list[tuple[str, str]] = []
 
+    is_lo_or_admin = _is_lo_manager(member) or is_admin
+    is_pe_or_admin = _is_pe_manager(member) or is_admin
+    num = ticket.ticket_number
+
     if ticket.status == "pending_wl":
         if ticket.workstream_lead_id != member.id and not is_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Workstream Lead")
-        ticket.wl_status   = "pushed_back"
-        ticket.wl_actor_id = member.id
-        ticket.wl_acted_at = now
-        ticket.wl_reason   = body.reason
-        ticket.status      = "draft"
+        ticket.wl_status      = "pushed_back"
+        ticket.wl_actor_id    = member.id
+        ticket.wl_acted_at    = now
+        ticket.wl_reason      = body.reason
+        ticket.status         = "draft"
+        ticket.pushed_back_from = "wl"
         ticket.currently_with_id = ticket.submitted_by_id
         _event(db, ticket.id, member.id, "wl_pushed_back", {"reason": body.reason})
         _system_comment(db, ticket.id,
             f"Pushed back to submitter by Workstream Lead {member.name}. Reason: {body.reason}")
         n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} was pushed back: {body.reason}", member.name,
-                    entity_type="liveops_ticket", entity_id=ticket_id)
+                    f"LO-{num:04d} needs more details — pushed back by Workstream Lead: {body.reason}",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
 
     elif ticket.status == "pending_tl":
         if ticket.team_lead_id != member.id and not is_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Team Lead")
-        ticket.tl_status   = "pushed_back"
-        ticket.tl_actor_id = member.id
-        ticket.tl_acted_at = now
-        ticket.tl_reason   = body.reason
-        ticket.wl_status   = "pending"
-        ticket.wl_actor_id = None
-        ticket.wl_acted_at = None
-        ticket.wl_reason   = None
-        ticket.status      = "pending_wl"
-        ticket.currently_with_id = ticket.workstream_lead_id
+        ticket.tl_status      = "pushed_back"
+        ticket.tl_actor_id    = member.id
+        ticket.tl_acted_at    = now
+        ticket.tl_reason      = body.reason
+        ticket.status         = "draft"
+        ticket.pushed_back_from = "tl"
+        ticket.currently_with_id = ticket.submitted_by_id
         _event(db, ticket.id, member.id, "tl_pushed_back", {"reason": body.reason})
         _system_comment(db, ticket.id,
-            f"Pushed back to Workstream Lead by Team Lead {member.name}. Reason: {body.reason}")
-        n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
-                    f"LO-{ticket.ticket_number:04d} pushed back by Team Lead: {body.reason}", member.name,
-                    entity_type="liveops_ticket", entity_id=ticket_id)
+            f"Pushed back to submitter by Team Lead {member.name}. Reason: {body.reason}")
+        n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
+                    f"LO-{num:04d} needs more details — pushed back by Team Lead: {body.reason}",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket_id)
         if n: pushes.append(n)
+        # Also notify WL so they know it went back
+        n = _notify(db, ticket.workstream_lead_id, "liveops_ticket",
+                    f"LO-{num:04d} was pushed back to submitter by Team Lead {member.name}: {body.reason}",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket_id)
+        if n: pushes.append(n)
+
+    elif ticket.status == "pending_lo":
+        if not is_lo_or_admin:
+            raise HTTPException(status_code=403, detail="Only LO Manager can push back at this stage")
+        ticket.lo_status      = "pushed_back"
+        ticket.lo_actor_id    = member.id
+        ticket.lo_acted_at    = now
+        ticket.lo_reason      = body.reason
+        ticket.status         = "draft"
+        ticket.pushed_back_from = "lo"
+        ticket.currently_with_id = ticket.submitted_by_id
+        _event(db, ticket.id, member.id, "lo_pushed_back", {"reason": body.reason})
+        _system_comment(db, ticket.id,
+            f"Pushed back to submitter by LO Manager {member.name}. Reason: {body.reason}")
+        n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
+                    f"LO-{num:04d} needs more details — pushed back by LO Manager: {body.reason}",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket_id)
+        if n: pushes.append(n)
+        # Notify WL and TL so they know it went back
+        for prior_id in filter(None, [ticket.workstream_lead_id, ticket.team_lead_id]):
+            n = _notify(db, prior_id, "liveops_ticket",
+                        f"LO-{num:04d} was pushed back to submitter by LO Manager: {body.reason}",
+                        member.name, entity_type="liveops_ticket", entity_id=ticket_id)
+            if n: pushes.append(n)
+
+    elif ticket.status == "pending_pe":
+        if not is_pe_or_admin:
+            raise HTTPException(status_code=403, detail="Only PE Manager can push back at this stage")
+        ticket.pe_status      = "pushed_back"
+        ticket.pe_actor_id    = member.id
+        ticket.pe_acted_at    = now
+        ticket.pe_reason      = body.reason
+        ticket.status         = "draft"
+        ticket.pushed_back_from = "pe"
+        ticket.currently_with_id = ticket.submitted_by_id
+        _event(db, ticket.id, member.id, "pe_pushed_back", {"reason": body.reason})
+        _system_comment(db, ticket.id,
+            f"Pushed back to submitter by PE Manager {member.name}. Reason: {body.reason}")
+        n = _notify(db, ticket.submitted_by_id, "liveops_ticket",
+                    f"LO-{num:04d} needs more details — pushed back by PE Manager: {body.reason}",
+                    member.name, entity_type="liveops_ticket", entity_id=ticket_id)
+        if n: pushes.append(n)
+        # Notify WL and TL so they know it went back
+        for prior_id in filter(None, [ticket.workstream_lead_id, ticket.team_lead_id]):
+            n = _notify(db, prior_id, "liveops_ticket",
+                        f"LO-{num:04d} was pushed back to submitter by PE Manager: {body.reason}",
+                        member.name, entity_type="liveops_ticket", entity_id=ticket_id)
+            if n: pushes.append(n)
 
     else:
         raise HTTPException(status_code=409, detail=f"Cannot push back ticket in status '{ticket.status}'")
@@ -750,11 +1006,12 @@ def reject_ticket(ticket_id: str, body: LiveOpsRejectBody, member_email: str, db
 
     is_admin = _is_system_admin(member)
     is_lo_or_admin = _is_lo_manager(member) or is_admin
+    is_pe_or_admin = _is_pe_manager(member) or is_admin
     now = _now()
     pushes: list[tuple[str, str]] = []
 
     if ticket.status == "pending_wl":
-        if ticket.workstream_lead_id != member.id and not is_lo_or_admin:
+        if ticket.workstream_lead_id != member.id and not is_lo_or_admin and not is_pe_or_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Workstream Lead")
         ticket.wl_status   = "rejected"
         ticket.wl_actor_id = member.id
@@ -764,7 +1021,7 @@ def reject_ticket(ticket_id: str, body: LiveOpsRejectBody, member_email: str, db
         _system_comment(db, ticket.id, f"Rejected by Workstream Lead {member.name}. Reason: {body.reason}")
 
     elif ticket.status == "pending_tl":
-        if ticket.team_lead_id != member.id and not is_lo_or_admin:
+        if ticket.team_lead_id != member.id and not is_lo_or_admin and not is_pe_or_admin:
             raise HTTPException(status_code=403, detail="Not the assigned Team Lead")
         ticket.tl_status   = "rejected"
         ticket.tl_actor_id = member.id
@@ -782,6 +1039,16 @@ def reject_ticket(ticket_id: str, body: LiveOpsRejectBody, member_email: str, db
         ticket.lo_reason   = body.reason
         _event(db, ticket.id, member.id, "lo_rejected", {"reason": body.reason})
         _system_comment(db, ticket.id, f"Rejected by LO Manager {member.name}. Reason: {body.reason}")
+
+    elif ticket.status == "pending_pe":
+        if not is_pe_or_admin:
+            raise HTTPException(status_code=403, detail="Only PE Manager can reject at this stage")
+        ticket.pe_status   = "rejected"
+        ticket.pe_actor_id = member.id
+        ticket.pe_acted_at = now
+        ticket.pe_reason   = body.reason
+        _event(db, ticket.id, member.id, "pe_rejected", {"reason": body.reason})
+        _system_comment(db, ticket.id, f"Rejected by PE Manager {member.name}. Reason: {body.reason}")
 
     else:
         raise HTTPException(status_code=409, detail=f"Ticket cannot be rejected in status '{ticket.status}'")
@@ -811,10 +1078,13 @@ def cancel_ticket(ticket_id: str, body: LiveOpsCancelBody, member_email: str, db
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     is_submitter = ticket.submitted_by_id == member.id
-    is_lo_or_admin = _is_lo_manager(member) or _is_system_admin(member)
+    is_admin = _is_system_admin(member)
+    is_lo_or_admin = _is_lo_manager(member) or is_admin
+    is_pe_or_admin = _is_pe_manager(member) or is_admin
+    is_manager = is_lo_or_admin or is_pe_or_admin
 
-    if not is_submitter and not is_lo_or_admin:
-        raise HTTPException(status_code=403, detail="Only the submitter or LO Manager can cancel")
+    if not is_submitter and not is_manager:
+        raise HTTPException(status_code=403, detail="Only the submitter or a manager can cancel")
     if ticket.status in ("completed", "rejected", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Ticket is already {ticket.status}")
 
@@ -840,13 +1110,13 @@ def hold_ticket(ticket_id: str, body: LiveOpsHoldBody, member_email: str, db: Se
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can put tickets on hold")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can put tickets on hold")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if ticket.status not in ("open", "in_progress", "pending_lo", "pending_review"):
+    if ticket.status not in ("open", "in_progress", "pending_lo", "pending_pe", "pending_review"):
         raise HTTPException(status_code=409, detail=f"Cannot put ticket on hold from status '{ticket.status}'")
 
     now = _now()
@@ -867,8 +1137,8 @@ def resume_ticket(ticket_id: str, member_email: str, db: Session = Depends(get_d
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can resume tickets")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can resume tickets")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
@@ -899,8 +1169,8 @@ def assign_ticket(ticket_id: str, body: LiveOpsAssignBody, member_email: str, db
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can assign tickets")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can assign tickets")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
@@ -968,8 +1238,8 @@ def reassign_ticket(ticket_id: str, body: LiveOpsReassignBody, member_email: str
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can reassign")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can reassign")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
@@ -1039,9 +1309,9 @@ def pickup_ticket(ticket_id: str, member_email: str, db: Session = Depends(get_d
 
     _event(db, ticket_id, member.id, "picked_up", {})
     _system_comment(db, ticket_id, f"Picked up by {member.name}.")
-    lo_id = _lo_manager_id(db)
+    mgr_id = _manager_id_for_ticket(db, ticket)
     pushes = []
-    n = _notify(db, lo_id, "liveops_ticket",
+    n = _notify(db, mgr_id, "liveops_ticket",
                 f"LO-{ticket.ticket_number:04d} picked up by {member.name}", member.name,
                 entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
@@ -1082,12 +1352,13 @@ def complete_ticket(ticket_id: str, body: LiveOpsCompleteBody, member_email: str
         ticket.currently_with_id = None
     ticket.updated_at = now
 
+    mgr_label = "PE" if ticket.assignee_type == 'pe' else "LO"
     note_text = f" Note: {body.note}" if body.note else ""
     _event(db, ticket_id, member.id, "work_completed", {"note": body.note})
-    _system_comment(db, ticket_id, f"Work completed by {member.name}.{note_text} Pending LO review.")
-    lo_id = _lo_manager_id(db)
+    _system_comment(db, ticket_id, f"Work completed by {member.name}.{note_text} Pending {mgr_label} review.")
+    mgr_id = _manager_id_for_ticket(db, ticket)
     pushes = []
-    n = _notify(db, lo_id, "liveops_ticket",
+    n = _notify(db, mgr_id, "liveops_ticket",
                 f"LO-{ticket.ticket_number:04d} ready for review — work done by {member.name}", member.name,
                 entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
@@ -1104,8 +1375,8 @@ def confirm_complete(ticket_id: str, body: LiveOpsConfirmCompleteBody, member_em
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can confirm completion")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can confirm completion")
 
     ticket = db.query(LiveOpsTicket).filter_by(id=ticket_id).first()
     if not ticket:
@@ -1160,16 +1431,16 @@ def reject_assignment(ticket_id: str, body: LiveOpsRejectAssignmentBody, member_
         LiveOpsAssignment.id != assignment.id,
     ).count()
 
+    mgr_id = _manager_id_for_ticket(db, ticket)
     if other_open == 0:
         ticket.status = "open"
-        ticket.currently_with_id = _lo_manager_id(db)
+        ticket.currently_with_id = mgr_id
 
     ticket.updated_at = now
     _event(db, ticket_id, member.id, "assignment_rejected", {"reason": body.reason})
     _system_comment(db, ticket_id, f"Assignment declined by {member.name}. Reason: {body.reason}")
-    lo_id = _lo_manager_id(db)
     pushes = []
-    n = _notify(db, lo_id, "liveops_ticket",
+    n = _notify(db, mgr_id, "liveops_ticket",
                 f"LO-{ticket.ticket_number:04d} assignment declined by {member.name}: {body.reason}", member.name,
                 entity_type="liveops_ticket", entity_id=ticket_id)
     if n: pushes.append(n)
@@ -1186,8 +1457,8 @@ def override_urgency(ticket_id: str, body: LiveOpsOverrideUrgencyBody, member_em
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if not _is_lo_manager(member) and not _is_system_admin(member):
-        raise HTTPException(status_code=403, detail="Only LO Manager can override urgency")
+    if not _is_lo_manager(member) and not _is_pe_manager(member) and not _is_system_admin(member):
+        raise HTTPException(status_code=403, detail="Only LO/PE Manager can override urgency")
     if body.urgency not in ("low", "medium", "high"):
         raise HTTPException(status_code=422, detail="urgency must be low, medium, or high")
 
@@ -1435,7 +1706,7 @@ def analytics_summary(db: Session = Depends(get_db)):
     ).count()
 
     pending_approval = db.query(LiveOpsTicket).filter(
-        LiveOpsTicket.status.in_(["pending_wl", "pending_tl", "pending_lo"])
+        LiveOpsTicket.status.in_(["pending_wl", "pending_tl", "pending_lo", "pending_pe"])
     ).count()
 
     in_progress = db.query(LiveOpsTicket).filter_by(status="in_progress").count()
